@@ -118,10 +118,13 @@
     transition: background 0.2s, border-color 0.2s;
   }
 
+  /* Transport-style glyphs. A circle means Record and nothing else, so
+     Standby and Playback get their own conventional shapes rather than the
+     same dot in a different colour. Shape carries the mode even in
+     peripheral vision, where colour alone is easy to misread. */
   #mode-dot {
     width: 22px;
     height: 22px;
-    border-radius: 50%;
     background: var(--standby);
     flex-shrink: 0;
   }
@@ -132,19 +135,31 @@
     letter-spacing: 0.02em;
   }
 
+  /* Standby: stop square — stationary, nothing in motion. */
   #mode-indicator.mode-standby { border-color: var(--standby); }
-  #mode-indicator.mode-standby #mode-dot { background: var(--standby); }
+  #mode-indicator.mode-standby #mode-dot {
+    background: var(--standby);
+    border-radius: 3px;
+  }
   #mode-indicator.mode-standby #mode-label { color: var(--standby); }
 
+  /* Record: the pulsing circle, the one place it belongs. */
   #mode-indicator.mode-record { border-color: var(--record); background: #1a0d0d; }
   #mode-indicator.mode-record #mode-dot {
     background: var(--record);
+    border-radius: 50%;
     animation: pulse 1.1s ease-in-out infinite;
   }
   #mode-indicator.mode-record #mode-label { color: var(--record); }
 
+  /* Playback: play triangle. Nudged slightly wider because a triangle reads
+     smaller than a circle or square filling the same box. */
   #mode-indicator.mode-playback { border-color: var(--playback); background: #0d1420; }
-  #mode-indicator.mode-playback #mode-dot { background: var(--playback); }
+  #mode-indicator.mode-playback #mode-dot {
+    background: var(--playback);
+    width: 24px;
+    clip-path: polygon(0% 0%, 100% 50%, 0% 100%);
+  }
   #mode-indicator.mode-playback #mode-label { color: var(--playback); }
 
   @keyframes pulse {
