@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>quick-replay</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0b0d;
+    --panel: #15171b;
+    --panel-border: #262a31;
+    --text: #e8eaed;
+    --text-dim: #8b909a;
+    --standby: #6b7280;
+    --record: #ef4444;
+    --playback: #3b82f6;
+    --accent: #f5f5f5;
+    --warn: #f59e0b;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    height: 100%;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 32px 20px 60px;
+    min-height: 100vh;
+  }
+
+  .hidden { display: none !important; }
+
+  /* --- arm screen --- */
+
+  #arm-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 24px;
+    max-width: 480px;
+    margin: auto;
+  }
+
+  #arm-screen h1 {
+    font-size: 2rem;
+    margin: 0;
+  }
+
+  #arm-screen p {
+    color: var(--text-dim);
+    font-size: 1.05rem;
+    line-height: 1.5;
+    margin: 0;
+  }
+
+  #arm-button {
+    font-size: 1.3rem;
+    font-weight: 600;
+    padding: 18px 48px;
+    border-radius: 12px;
+    border: none;
+    background: var(--accent);
+    color: #0a0b0d;
+    cursor: pointer;
+  }
+
+  #arm-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  #arm-button:hover:not(:disabled) {
+    background: #ffffff;
+  }
+
+  #arm-error {
+    display: none;
+    color: var(--record);
+    font-size: 0.95rem;
+    max-width: 420px;
+  }
+
+  #arm-error.visible { display: block; }
+
+  /* --- main UI --- */
+
+  #main-ui {
+    width: 100%;
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  /* mode indicator */
+
+  #mode-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 36px 20px;
+    border-radius: 16px;
+    border: 2px solid var(--panel-border);
+    background: var(--panel);
+    transition: background 0.2s, border-color 0.2s;
+  }
+
+  #mode-dot {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--standby);
+    flex-shrink: 0;
+  }
+
+  #mode-label {
+    font-size: 2.6rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+
+  #mode-indicator.mode-standby { border-color: var(--standby); }
+  #mode-indicator.mode-standby #mode-dot { background: var(--standby); }
+  #mode-indicator.mode-standby #mode-label { color: var(--standby); }
+
+  #mode-indicator.mode-record { border-color: var(--record); background: #1a0d0d; }
+  #mode-indicator.mode-record #mode-dot {
+    background: var(--record);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  #mode-indicator.mode-record #mode-label { color: var(--record); }
+
+  #mode-indicator.mode-playback { border-color: var(--playback); background: #0d1420; }
+  #mode-indicator.mode-playback #mode-dot { background: var(--playback); }
+  #mode-indicator.mode-playback #mode-label { color: var(--playback); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.5); }
+    50% { opacity: 0.55; box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+  }
+
+  /* buffer fill */
+
+  .section-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  #buffer-text {
+    font-size: 1.3rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    margin-bottom: 8px;
+  }
+
+  .bar {
+    width: 100%;
+    height: 14px;
+    border-radius: 7px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    overflow: hidden;
+  }
+
+  #buffer-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 7px;
+    transition: width 0.2s linear;
+  }
+
+  /* level meter */
+
+  #level-meter-container {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    transition: opacity 0.15s;
+  }
+
+  #level-meter-container.visible {
+    opacity: 1;
+    max-height: 60px;
+  }
+
+  #level-meter-bar {
+    height: 20px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    overflow: hidden;
+  }
+
+  #level-meter-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #22c55e, #eab308 70%, var(--record) 92%);
+    border-radius: 6px;
+  }
+
+  /* duration row */
+
+  #duration-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 10px;
+  }
+
+  .duration-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 16px 6px;
+    border-radius: 10px;
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .duration-btn:hover { border-color: var(--accent); }
+  .duration-btn:active { transform: scale(0.97); }
+
+  .duration-key {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .duration-label {
+    font-size: 1.4rem;
+    font-weight: 700;
+  }
+
+  .duration-annotation {
+    font-size: 0.72rem;
+    color: var(--warn);
+    min-height: 1em;
+    visibility: hidden;
+  }
+
+  .duration-annotation.visible { visibility: visible; }
+
+  /* playback status */
+
+  #playback-status {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  #playback-status.visible { display: flex; }
+
+  #playback-status-text {
+    font-size: 1.05rem;
+    color: var(--playback);
+    font-weight: 600;
+  }
+
+  #playback-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--playback);
+    border-radius: 7px;
+    transition: width 0.05s linear;
+  }
+
+  /* key legend */
+
+  #key-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--panel-border);
+    padding-top: 16px;
+  }
+
+  #key-legend kbd {
+    display: inline-block;
+    min-width: 1.4em;
+    padding: 2px 6px;
+    text-align: center;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 5px;
+    font-family: inherit;
+    color: var(--text);
+    margin-right: 4px;
+  }
+
+  #mic-note {
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+
+  /* flash message */
+
+  #flash-message {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    background: #2a1414;
+    border: 1px solid var(--record);
+    color: #fca5a5;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s, transform 0.15s;
+  }
+
+  #flash-message.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+
+  /* focus banner */
+
+  #focus-banner {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: var(--warn);
+    color: #1a1200;
+    font-weight: 700;
+    text-align: center;
+    padding: 10px;
+    font-size: 0.95rem;
+    z-index: 10;
+  }
+
+  #focus-banner.visible { display: block; }
+
+  @media (max-width: 560px) {
+    #duration-row { grid-template-columns: repeat(3, 1fr); }
+    #mode-label { font-size: 2rem; }
+  }
+</style>
+</head>
+
+<body data-max-lookback-seconds="__MAX_LOOKBACK_SECONDS__">
+  <div id="focus-banner">Window not focused — keyboard shortcuts won't reach the page. Click the page to resume.</div>
+
+  <div id="arm-screen">
+    <h1>quick-replay</h1>
+    <p>
+      quick-replay continuously listens to your microphone and lets a single keypress
+      instantly replay the last few seconds to minutes of audio. Browsers require a
+      click before they'll let a page use audio at all — press Arm to grant mic access
+      once and start the live buffer.
+    </p>
+    <button id="arm-button" type="button">Arm</button>
+    <div id="arm-error"></div>
+  </div>
+
+  <div id="main-ui" class="hidden">
+    <div id="mode-indicator" class="mode-standby">
+      <div id="mode-dot"></div>
+      <div id="mode-label">Standby</div>
+    </div>
+
+    <div id="playback-status">
+      <div id="playback-status-text"></div>
+      <div class="bar"><div id="playback-progress-fill"></div></div>
+    </div>
+
+    <div>
+      <div class="section-label">Buffer</div>
+      <div id="buffer-text">0:00 / 0:00</div>
+      <div class="bar"><div id="buffer-bar-fill"></div></div>
+    </div>
+
+    <div id="level-meter-container">
+      <div class="section-label">Input level</div>
+      <div id="level-meter-bar"><div id="level-meter-fill"></div></div>
+    </div>
+
+    <div>
+      <div class="section-label">Replay last…</div>
+      <div id="duration-row">
+        <button class="duration-btn" id="duration-btn-5" type="button">
+          <span class="duration-key">1</span>
+          <span class="duration-label">5s</span>
+          <span class="duration-annotation" id="duration-annotation-5"></span>
+        </button>
+        <button class="duration-btn" id="duration-btn-10" type="button">
+          <span class="duration-key">2</span>
+          <span class="duration-label">10s</span>
+          <span class="duration-annotation" id="duration-annotation-10"></span>
+        </button>
+        <button class="duration-btn" id="duration-btn-30" type="button">
+          <span class="duration-key">3</span>
+          <span class="duration-label">30s</span>
+          <span class="duration-annotation" id="duration-annotation-30"></span>
+        </button>
+        <button class="duration-btn" id="duration-btn-60" type="button">
+          <span class="duration-key">4</span>
+          <span class="duration-label">1m</span>
+          <span class="duration-annotation" id="duration-annotation-60"></span>
+        </button>
+        <button class="duration-btn" id="duration-btn-120" type="button">
+          <span class="duration-key">5</span>
+          <span class="duration-label">2m</span>
+          <span class="duration-annotation" id="duration-annotation-120"></span>
+        </button>
+        <button class="duration-btn" id="duration-btn-300" type="button">
+          <span class="duration-key">6</span>
+          <span class="duration-label">5m</span>
+          <span class="duration-annotation" id="duration-annotation-300"></span>
+        </button>
+      </div>
+    </div>
+
+    <div id="key-legend">
+      <div><kbd>1</kbd>–<kbd>6</kbd> replay duration</div>
+      <div><kbd>r</kbd> Record</div>
+      <div><kbd>s</kbd> Standby</div>
+      <div><kbd>Space</kbd> back to previous mode</div>
+      <div><kbd>Esc</kbd> back to Standby</div>
+    </div>
+
+    <div id="mic-note">
+      Note: the microphone indicator stays lit during playback — the stream is
+      deliberately held so returning to Record is instant and gapless.
+    </div>
+  </div>
+
+  <div id="flash-message"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
