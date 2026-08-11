@@ -178,12 +178,102 @@
     overflow: hidden;
   }
 
-  #buffer-bar-fill {
-    height: 100%;
-    width: 0%;
+  /* timeline */
+
+  #timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  #timeline-ticks {
+    position: relative;
+    height: 22px;
+  }
+
+  .timeline-tick {
+    position: absolute;
+    top: 13px;
+    bottom: 0;
+    width: 1px;
+    background: var(--text-dim);
+  }
+
+  .timeline-tick.clipped { opacity: 0.4; }
+
+  .timeline-tick-label {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    line-height: 1;
+    cursor: default;
+  }
+
+  .timeline-tick-label.clipped { opacity: 0.4; }
+
+  #timeline-track-wrap {
+    position: relative;
+  }
+
+  #timeline-track {
+    position: relative;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    overflow: hidden;
+  }
+
+  .timeline-take {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--standby);
+  }
+
+  .timeline-take.active {
+    background: var(--record);
+  }
+
+  .timeline-boundary {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
     background: var(--accent);
-    border-radius: 7px;
-    transition: width 0.2s linear;
+  }
+
+  #timeline-highlight {
+    position: absolute;
+    top: -1px;
+    bottom: -1px;
+    background: rgba(245, 245, 245, 0.14);
+    border-left: 1px solid var(--accent);
+    pointer-events: none;
+  }
+
+  #timeline-axis {
+    position: relative;
+    height: 16px;
+  }
+
+  .timeline-axis-label {
+    position: absolute;
+    top: 2px;
+    font-size: 0.68rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+
+  #timeline-note {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 6px;
+    line-height: 1.4;
   }
 
   /* level meter */
@@ -461,7 +551,19 @@
     <div>
       <div class="section-label">Buffer</div>
       <div id="buffer-text">0:00 / 0:00</div>
-      <div class="bar"><div id="buffer-bar-fill"></div></div>
+      <div id="timeline">
+        <div id="timeline-ticks"></div>
+        <div id="timeline-track-wrap">
+          <div id="timeline-track"></div>
+          <div id="timeline-highlight" class="hidden"></div>
+        </div>
+        <div id="timeline-axis"></div>
+      </div>
+      <div id="timeline-note">
+        Axis measures recorded audio time, not wall-clock time — idle stretches
+        between takes aren't stored, so &minus;2:00 may be much further back
+        than two real minutes.
+      </div>
     </div>
 
     <div id="level-meter-container">

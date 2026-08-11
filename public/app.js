@@ -51,7 +51,10 @@ const el = {
   modeIndicator: document.getElementById('mode-indicator'),
   modeLabel: document.getElementById('mode-label'),
   bufferText: document.getElementById('buffer-text'),
-  bufferBarFill: document.getElementById('buffer-bar-fill'),
+  timelineTicks: document.getElementById('timeline-ticks'),
+  timelineTrack: document.getElementById('timeline-track'),
+  timelineAxis: document.getElementById('timeline-axis'),
+  timelineHighlight: document.getElementById('timeline-highlight'),
   levelMeterContainer: document.getElementById('level-meter-container'),
   levelMeterFill: document.getElementById('level-meter-fill'),
   playbackStatus: document.getElementById('playback-status'),
@@ -84,6 +87,17 @@ let generation = 0; // bumped on every dispatched event; guards async races
 let latestPeak = 0;
 let displayedLevel = 0;
 let levelRaf = null;
+
+// Takes: contiguous stretches of capture, split whenever Record is left for
+// Standby or Playback. Boundaries are stored as ABSOLUTE frame positions
+// (ringBuffer.totalWritten), never as offsets into the ring buffer. That is
+// what makes them survive wraparound: once the buffer is full and old audio
+// starts being overwritten, the markers themselves never move — only the
+// retained window slides forward past them, and takes fall off the back.
+let takes = [];
+let currentTake = null;
+let pendingNewTake = false;
+let takeCounter = 0; // stable ids, so labels don't renumber as takes are pruned
 
 // Playback gain. Expressed in dB because perceived loudness is logarithmic —
 // a linear multiplier slider would waste most of its travel on boost and
@@ -242,7 +256,9 @@ async function acquireMic() {
   workletNode.port.onmessage = (event) => {
     const data = event.data;
     if (!data || data.type !== 'audio') return;
+    const startAbs = ringBuffer.totalWritten;
     ringBuffer.write(data.samples);
+    noteCapturedFrames(startAbs, ringBuffer.totalWritten);
     updateLevelMeterFromWorklet(data.peak);
   };
   gainNode = audioCtx.createGain();
@@ -294,6 +310,9 @@ function startCapture() {
   // has moved us out of Record; never enable capture outside Record, or we'd
   // record during playback and feed the speakers back into the mic.
   if (reducerState.mode !== RECORD) return;
+  // Every entry into Record begins a new take, including the return from a
+  // playback — that discontinuity is exactly what the markers exist to show.
+  pendingNewTake = true;
   if (workletNode) {
     workletNode.port.postMessage({ type: 'recording', value: true });
   }
@@ -310,6 +329,57 @@ function flush() {
   if (workletNode) {
     workletNode.port.postMessage({ type: 'flush' });
   }
+}
+
+// --- takes -----------------------------------------------------------------
+
+// Called after every batch the worklet delivers. Deriving take boundaries
+// from the write stream rather than from the stopCapture effect matters: the
+// worklet's flush round-trips through the audio thread, so the final ~85ms of
+// a take arrives *after* the transition. Extending the take on write means
+// that tail lands inside the take it belongs to instead of just outside it.
+function noteCapturedFrames(startAbs, endAbs) {
+  if (endAbs <= startAbs) return;
+
+  if (pendingNewTake || !currentTake) {
+    currentTake = { id: ++takeCounter, startAbs, endAbs, wallClockStart: Date.now() };
+    takes.push(currentTake);
+    pendingNewTake = false;
+  } else {
+    currentTake.endAbs = endAbs;
+  }
+
+  pruneTakes();
+}
+
+// Drop takes the ring buffer has entirely overwritten, so the list can't grow
+// without bound across a long session.
+function pruneTakes() {
+  const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
+  if (takes.length && takes[0].endAbs <= oldestAbs) {
+    takes = takes.filter((t) => t.endAbs > oldestAbs);
+    if (currentTake && !takes.includes(currentTake)) currentTake = null;
+  }
+}
+
+// Snapshot the renderer draws from. All positions are absolute frames; the
+// view window is [nowAbs - capacity, nowAbs], so "now" sits at the right edge
+// and everything scrolls leftward as recording continues.
+function getTimelineModel() {
+  if (!ringBuffer || !audioCtx) return null;
+  const nowAbs = ringBuffer.totalWritten;
+  const capacity = ringBuffer.capacity;
+  return {
+    sampleRate: audioCtx.sampleRate,
+    maxSeconds: MAX_SECONDS,
+    capacity,
+    nowAbs,
+    windowStartAbs: nowAbs - capacity,
+    oldestAbs: nowAbs - ringBuffer.available,
+    takes,
+    activeTake: reducerState.mode === RECORD ? currentTake : null,
+    durations: DURATIONS,
+  };
 }
 
 // --- playback gain ---------------------------------------------------------
@@ -509,6 +579,152 @@ function modeLabelText(mode) {
   return 'Standby';
 }
 
+// --- timeline highlight (hover preview) -----------------------------------
+
+function showTimelineHighlight(pct) {
+  if (!el.timelineHighlight) return;
+  const clamped = Math.min(100, Math.max(0, pct));
+  el.timelineHighlight.style.left = `${clamped}%`;
+  el.timelineHighlight.style.width = `${100 - clamped}%`;
+  el.timelineHighlight.classList.remove('hidden');
+}
+
+function hideTimelineHighlight() {
+  if (!el.timelineHighlight) return;
+  el.timelineHighlight.classList.add('hidden');
+}
+
+// Hovering a duration button previews the span of the track it would replay.
+function highlightDurationSpan(seconds) {
+  const model = getTimelineModel();
+  if (!model || model.capacity <= 0) return;
+  const targetAbs = model.nowAbs - seconds * model.sampleRate;
+  const pct = Math.min(1, Math.max(0, (targetAbs - model.windowStartAbs) / model.capacity)) * 100;
+  showTimelineHighlight(pct);
+}
+
+// --- timeline (buffer/take visualization) ---------------------------------
+
+// Hover is delegated to the container rather than bound per tick: the ticks
+// are rebuilt several times a second while recording, and a node replaced
+// mid-hover never fires its own mouseleave, which would strand the highlight.
+if (el.timelineTicks) {
+  el.timelineTicks.addEventListener('mouseover', (event) => {
+    const pct = event.target && event.target.dataset && event.target.dataset.pct;
+    if (pct !== undefined && pct !== null && pct !== '') showTimelineHighlight(Number(pct));
+  });
+  el.timelineTicks.addEventListener('mouseleave', hideTimelineHighlight);
+}
+
+const AXIS_INTERVALS_SECONDS = [5, 10, 15, 30, 60, 120, 300];
+
+function pickAxisInterval(maxSeconds) {
+  for (const candidate of AXIS_INTERVALS_SECONDS) {
+    if (maxSeconds / candidate <= 6) return candidate;
+  }
+  return AXIS_INTERVALS_SECONDS[AXIS_INTERVALS_SECONDS.length - 1];
+}
+
+function renderTimeline(model) {
+  if (!el.timelineTicks || !el.timelineTrack || !el.timelineAxis) return;
+
+  if (!model || model.capacity <= 0) {
+    el.timelineTicks.replaceChildren();
+    el.timelineTrack.replaceChildren();
+    el.timelineAxis.replaceChildren();
+    hideTimelineHighlight();
+    return;
+  }
+
+  const fraction = (abs) => {
+    const f = (abs - model.windowStartAbs) / model.capacity;
+    return Math.min(1, Math.max(0, f));
+  };
+
+  // --- reach ticks: "how far back does duration N reach?" ---
+  const ticksFrag = document.createDocumentFragment();
+  let lastLabelPct = null;
+  for (const d of model.durations) {
+    const targetAbs = model.nowAbs - d.seconds * model.sampleRate;
+    const rawFraction = (targetAbs - model.windowStartAbs) / model.capacity;
+    const clipped = rawFraction < 0;
+    const pct = Math.min(1, Math.max(0, rawFraction)) * 100;
+
+    const tick = document.createElement('div');
+    tick.className = clipped ? 'timeline-tick clipped' : 'timeline-tick';
+    tick.style.left = `${pct}%`;
+    tick.dataset.pct = String(pct);
+    ticksFrag.appendChild(tick);
+
+    if (lastLabelPct === null || Math.abs(pct - lastLabelPct) >= 4) {
+      const label = document.createElement('div');
+      label.className = clipped ? 'timeline-tick-label clipped' : 'timeline-tick-label';
+      label.style.left = `${pct}%`;
+      label.textContent = d.key;
+      label.dataset.pct = String(pct);
+      ticksFrag.appendChild(label);
+      lastLabelPct = pct;
+    }
+  }
+  el.timelineTicks.replaceChildren(ticksFrag);
+
+  // --- track: unfilled headroom + one span per take + boundary markers ---
+  const trackFrag = document.createDocumentFragment();
+  for (const take of model.takes) {
+    const clampedStartAbs = Math.max(take.startAbs, model.oldestAbs);
+    const startPct = fraction(clampedStartAbs) * 100;
+    const endPct = fraction(take.endAbs) * 100;
+    const width = Math.max(0, endPct - startPct);
+    const isActive = model.activeTake === take;
+
+    const span = document.createElement('div');
+    span.className = isActive ? 'timeline-take active' : 'timeline-take';
+    span.style.left = `${startPct}%`;
+    span.style.width = `${width}%`;
+    const takeSeconds = (take.endAbs - take.startAbs) / model.sampleRate;
+    const clockStart = new Date(take.wallClockStart).toLocaleTimeString();
+    span.title = `Take ${take.id} — ${formatMinSec(takeSeconds)}, started ${clockStart}`;
+    trackFrag.appendChild(span);
+
+    // Start marker: only when the true start is still retained (not
+    // partially overwritten — that edge is the buffer limit, not a seam).
+    if (take.startAbs >= model.oldestAbs) {
+      const startMarker = document.createElement('div');
+      startMarker.className = 'timeline-boundary';
+      startMarker.style.left = `${startPct}%`;
+      trackFrag.appendChild(startMarker);
+    }
+    // End marker: skip on the active take — its end is "now", not a seam.
+    if (take !== model.activeTake) {
+      const endMarker = document.createElement('div');
+      endMarker.className = 'timeline-boundary';
+      endMarker.style.left = `${endPct}%`;
+      trackFrag.appendChild(endMarker);
+    }
+  }
+  el.timelineTrack.replaceChildren(trackFrag);
+
+  // --- time axis: adaptive interval, "now" right-aligned ---
+  const axisFrag = document.createDocumentFragment();
+  const interval = pickAxisInterval(model.maxSeconds);
+  for (let s = 0; s <= model.maxSeconds; s += interval) {
+    const pct = model.maxSeconds > 0 ? (1 - s / model.maxSeconds) * 100 : 100;
+    const label = document.createElement('div');
+    label.className = 'timeline-axis-label';
+    label.style.left = `${pct}%`;
+    label.textContent = s === 0 ? 'now' : `-${formatMinSec(s)}`;
+    if (pct >= 99.99) {
+      label.style.transform = 'translateX(-100%)';
+    } else if (pct <= 0.01) {
+      label.style.transform = 'translateX(0)';
+    } else {
+      label.style.transform = 'translateX(-50%)';
+    }
+    axisFrag.appendChild(label);
+  }
+  el.timelineAxis.replaceChildren(axisFrag);
+}
+
 function render() {
   if (!el.mainUi) return;
 
@@ -529,10 +745,7 @@ function render() {
   if (el.bufferText) {
     el.bufferText.textContent = `${formatMinSec(availableSeconds)} / ${formatMinSec(MAX_SECONDS)}`;
   }
-  if (el.bufferBarFill) {
-    const pct = MAX_SECONDS > 0 ? Math.min(100, (availableSeconds / MAX_SECONDS) * 100) : 0;
-    el.bufferBarFill.style.width = `${pct}%`;
-  }
+  renderTimeline(getTimelineModel());
 
   // Level meter only meaningful while recording.
   if (el.levelMeterContainer) {
@@ -559,7 +772,7 @@ function render() {
   }
   if (mode === PLAYBACK && el.playbackStatusText) {
     const durationLabel = DURATIONS.find((d) => d.seconds === lastPlaybackSeconds);
-    const label = durationLabel ? durationLabel.label : `${lastPlaybackSeconds}s`;
+    const label = durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds);
     const target = modeLabelText(reducerState.previousMode);
     el.playbackStatusText.textContent = `playing last ${label} → returning to ${target}`;
   }
@@ -628,6 +841,8 @@ for (const d of DURATIONS) {
   const btn = document.getElementById(`duration-btn-${d.seconds}`);
   if (btn) {
     btn.addEventListener('click', () => dispatchDuration(d.seconds));
+    btn.addEventListener('mouseenter', () => highlightDurationSpan(d.seconds));
+    btn.addEventListener('mouseleave', hideTimelineHighlight);
   }
 }
 
