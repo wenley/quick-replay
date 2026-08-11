@@ -24,6 +24,12 @@ export function createRingBuffer(capacityFrames) {
   function write(chunk) {
     let data = chunk;
 
+    // Count every frame handed to us, including any dropped just below.
+    // totalWritten is an absolute position in the audio stream, so it has to
+    // advance by what was written, not by what happened to be retained -
+    // otherwise positions recorded against it drift out of sync.
+    const writtenFrames = chunk.length;
+
     // If the incoming chunk alone is bigger than the whole buffer, only its
     // tail can possibly survive - drop the head up front.
     if (data.length > capacity) {
@@ -43,7 +49,7 @@ export function createRingBuffer(capacityFrames) {
     }
 
     writeIndex = (writeIndex + len) % capacity;
-    totalWritten += len;
+    totalWritten += writtenFrames;
   }
 
   function getAvailable() {
@@ -83,6 +89,13 @@ export function createRingBuffer(capacityFrames) {
     },
     get capacity() {
       return capacity;
+    },
+    // Total frames ever written, including those since overwritten. Callers
+    // use this as a stable absolute coordinate: a position recorded against
+    // it stays valid as the buffer wraps, because only the retained window
+    // moves, never the coordinate itself.
+    get totalWritten() {
+      return totalWritten;
     },
     clear,
   };

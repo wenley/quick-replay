@@ -82,6 +82,27 @@ test('available saturates at capacity and never exceeds it', () => {
   assert.equal(rb.capacity, 4);
 });
 
+test('totalWritten keeps counting past capacity (absolute coordinate)', () => {
+  const rb = createRingBuffer(10);
+  assert.equal(rb.totalWritten, 0);
+  rb.write(ramp(0, 6));
+  assert.equal(rb.totalWritten, 6);
+  assert.equal(rb.available, 6);
+  // Past capacity: available saturates but totalWritten must not, or take
+  // markers recorded against it would collapse onto each other.
+  rb.write(ramp(6, 9));
+  assert.equal(rb.totalWritten, 15);
+  assert.equal(rb.available, 10);
+});
+
+test('totalWritten - available gives the oldest retained absolute frame', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 25));
+  assert.equal(rb.totalWritten - rb.available, 15);
+  // Frame 15 is the oldest still held; with a 0..24 ramp that is value 15.
+  assert.equal(rb.readLast(10)[0], 15);
+});
+
 test('clear() resets available to 0', () => {
   const rb = createRingBuffer(8);
   rb.write(ramp(0, 8));
