@@ -113,9 +113,23 @@ test('a mode event naming the current mode is a no-op', () => {
   assert.deepEqual(result.effects, []);
 });
 
-test('back outside playback is a no-op', () => {
+test('back in record toggles to standby, releasing the mic', () => {
   const state = { mode: RECORD, previousMode: STANDBY };
   const result = reduce(state, { type: 'back' }, { micHeld: true });
+  assert.equal(result.state.mode, STANDBY);
+  assert.deepEqual(types(result.effects), [STOP_CAPTURE, FLUSH, RELEASE_MIC]);
+});
+
+test('back in standby toggles to record, acquiring the mic', () => {
+  const state = { mode: STANDBY, previousMode: STANDBY };
+  const result = reduce(state, { type: 'back' }, { micHeld: false });
   assert.equal(result.state.mode, RECORD);
-  assert.deepEqual(result.effects, []);
+  assert.deepEqual(types(result.effects), [ACQUIRE_MIC, START_CAPTURE]);
+});
+
+test('back still returns to previous mode while in playback (not a toggle)', () => {
+  const state = { mode: PLAYBACK, previousMode: RECORD };
+  const result = reduce(state, { type: 'back' }, { micHeld: true });
+  assert.equal(result.state.mode, RECORD);
+  assert.deepEqual(types(result.effects), [STOP_PLAYBACK, START_CAPTURE]);
 });

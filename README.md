@@ -44,7 +44,7 @@ on your network.
 | `6` | Replay last 5m |
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
-| `Space` | Back to previous mode |
+| `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
 
 The browser tab must be focused for keys to register.

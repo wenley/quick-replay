@@ -111,7 +111,9 @@ function handlePlaybackEnded(state, context) {
 
 function handleBack(state, context) {
   if (state.mode !== PLAYBACK) {
-    return { state: { ...state }, effects: [] };
+    // Outside playback, Space is a Record/Standby toggle — the single key
+    // you can hit to start or stop capturing without aiming.
+    return handleMode(state, state.mode === RECORD ? STANDBY : RECORD, context);
   }
 
   const target = state.previousMode;
