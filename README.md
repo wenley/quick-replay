@@ -46,7 +46,7 @@ on your network.
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
 | `l` | Toggle looping on/off |
-| `x` | Cycle playback speed: 1.0x → 0.75x → 0.5x → 1.0x |
+| `x` | Cycle playback speed: 1.0x → 0.75x → 0.5x → 0.25x → 1.0x |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
 | `↑` / `↓` | Playback volume ±1 dB |
@@ -70,8 +70,9 @@ turning it up never degrades what's stored in the buffer.
 
 ## Slowed playback
 
-Press `x` to cycle playback speed — 1.0x → 0.75x → 0.5x → back to 1.0x — or use
-the **Playback speed** slider for anything in between, down to 0.5x. This is
+Press `x` to cycle playback speed — 1.0x → 0.75x → 0.5x → 0.25x → back to
+1.0x — or use the **Playback speed** slider for anything in between, down to
+0.25x (quarter speed). This is
 for studying a sung phrase: slowing it down does **not** transpose it down in
 pitch. A plain `playbackRate` on a raw audio buffer would do that (slower
 playback = lower pitch, the vinyl-record effect), which is exactly what this
@@ -89,7 +90,10 @@ which the 1.0x path never pays.
 
 Sustained vowels hold up well even at 0.5x — that's the material this is
 built for. Consonants and other transients smear somewhat at the slower
-speeds; that's inherent to time-domain stretching, not a bug. Changing speed
+speeds; that's inherent to time-domain stretching, not a bug. Expect that
+smearing to become clearly audible by 0.25x, where the stretcher is
+repeating each grain four times over: useful for picking apart a fast
+melisma note by note, less so for judging tone. Changing speed
 while a clip is playing restarts it at the new speed rather than trying to
 switch speeds mid-stream. The setting persists across reloads, same as gain.
 

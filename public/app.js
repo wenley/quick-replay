@@ -155,7 +155,7 @@ let looping = loadStoredLooping();
 // Like looping (and unlike gain), it doesn't need audioCtx to load, so it's
 // read from storage eagerly here rather than deferred to arm-time.
 const SPEED_STORAGE_KEY = 'quick-replay:speed';
-const SPEED_MIN = 0.5;
+const SPEED_MIN = 0.25;
 const SPEED_MAX = 1.0;
 
 function loadStoredSpeed() {
@@ -838,11 +838,12 @@ function retuneMediaSpeed() {
 // `x` — cycles 1.0 -> 0.75 -> 0.5 -> back to 1.0. Steps down from wherever
 // the slider currently sits (so an in-between slider value like 0.83 cycles
 // to the next step down rather than snapping to a fixed sequence position).
+// Steps down through the presets and wraps back to full speed. Includes the
+// slider's floor so the keyboard can reach the whole range on its own.
+const SPEED_STEPS = [0.75, 0.5, 0.25];
+
 function cycleSpeed() {
-  let next;
-  if (speed > 0.75 + 1e-9) next = 0.75;
-  else if (speed > 0.5 + 1e-9) next = 0.5;
-  else next = 1;
+  const next = SPEED_STEPS.find((step) => speed > step + 1e-9) ?? SPEED_MAX;
   setSpeed(next);
   flashMessage(`speed ${formatSpeed(next)}`);
 }
