@@ -42,6 +42,7 @@ on your network.
 | `4` | Replay last 1m |
 | `5` | Replay last 2m |
 | `6` | Replay last 5m |
+| `q` | Replay the current take from its start |
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |

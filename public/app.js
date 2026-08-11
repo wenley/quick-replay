@@ -116,6 +116,8 @@ let playbackGeneration = 0; // bumped whenever a playback source is superseded
 let playbackStartTime = 0;
 let playbackDurationSeconds = 0;
 let lastPlaybackSeconds = 0;
+let lastPlaybackLabel = null;
+let pendingPlaybackLabel = null;
 let progressRaf = null;
 
 // --- small utils ---------------------------------------------------------
@@ -362,6 +364,18 @@ function pruneTakes() {
   }
 }
 
+// The most recent take, clamped to what the buffer still holds. Returns null
+// when there is nothing replayable.
+function currentTakeWindow() {
+  if (!ringBuffer || takes.length === 0) return null;
+  const take = takes[takes.length - 1];
+  const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
+  const startAbs = Math.max(take.startAbs, oldestAbs);
+  const frames = ringBuffer.totalWritten - startAbs;
+  if (frames <= 0) return null;
+  return { startAbs, frames, trimmed: take.startAbs < oldestAbs };
+}
+
 // Snapshot the renderer draws from. All positions are absolute frames; the
 // view window is [nowAbs - capacity, nowAbs], so "now" sits at the right edge
 // and everything scrolls leftward as recording continues.
@@ -439,6 +453,8 @@ function startPlayback(seconds) {
   const frames = Math.floor(seconds * audioCtx.sampleRate);
   const samples = ringBuffer.readLast(frames);
   lastPlaybackSeconds = seconds;
+  lastPlaybackLabel = pendingPlaybackLabel;
+  pendingPlaybackLabel = null;
 
   playbackGeneration++;
   const myPlaybackGen = playbackGeneration;
@@ -563,12 +579,28 @@ async function dispatch(event) {
   render();
 }
 
-function dispatchDuration(seconds) {
+function dispatchDuration(seconds, label = null) {
   if (!ringBuffer || ringBuffer.available === 0) {
     flashMessage('nothing recorded yet');
     return;
   }
+  pendingPlaybackLabel = label;
   dispatch({ type: 'duration', seconds });
+}
+
+// `q` — replay the current take from its start, or from as far back as the
+// buffer still holds if it has already been partly overwritten.
+function replayCurrentTake() {
+  const window = currentTakeWindow();
+  if (!window) {
+    flashMessage('nothing recorded yet');
+    return;
+  }
+  const seconds = window.frames / audioCtx.sampleRate;
+  const label = window.trimmed
+    ? `take (${formatMinSec(seconds)}, trimmed to buffer)`
+    : `take (${formatMinSec(seconds)})`;
+  dispatchDuration(seconds, label);
 }
 
 // --- rendering -------------------------------------------------------------
@@ -772,7 +804,8 @@ function render() {
   }
   if (mode === PLAYBACK && el.playbackStatusText) {
     const durationLabel = DURATIONS.find((d) => d.seconds === lastPlaybackSeconds);
-    const label = durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds);
+    const label = lastPlaybackLabel
+      || (durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds));
     const target = modeLabelText(reducerState.previousMode);
     el.playbackStatusText.textContent = `playing last ${label} → returning to ${target}`;
   }
@@ -825,6 +858,11 @@ window.addEventListener('keydown', (event) => {
   }
 
   const lower = key.toLowerCase();
+  if (lower === 'q') {
+    event.preventDefault();
+    replayCurrentTake();
+    return;
+  }
   if (lower === 'r') {
     dispatch({ type: 'mode', to: RECORD });
     return;
