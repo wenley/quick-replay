@@ -55,6 +55,7 @@ const el = {
   timelineTrack: document.getElementById('timeline-track'),
   timelineAxis: document.getElementById('timeline-axis'),
   timelineHighlight: document.getElementById('timeline-highlight'),
+  timelinePlaying: document.getElementById('timeline-playing'),
   levelMeterContainer: document.getElementById('level-meter-container'),
   levelMeterFill: document.getElementById('level-meter-fill'),
   playbackStatus: document.getElementById('playback-status'),
@@ -119,6 +120,8 @@ let playbackDurationSeconds = 0;
 let lastPlaybackSeconds = 0;
 let lastPlaybackLabel = null;
 let pendingPlaybackLabel = null;
+let playbackSpanStartAbs = 0;
+let playbackSpanEndAbs = 0;
 let progressRaf = null;
 
 // Looping playback. Global toggle, not per-playback — it can be flipped at
@@ -473,6 +476,12 @@ function renderGain() {
 function startPlayback(seconds) {
   const frames = Math.floor(seconds * audioCtx.sampleRate);
   const samples = ringBuffer.readLast(frames);
+  // Which stretch of the buffer this replay is drawn from, in absolute frame
+  // positions so the timeline can light it up. Captured here rather than
+  // derived at render time because readLast may have returned fewer frames
+  // than asked for, and the span must reflect what is actually being heard.
+  playbackSpanEndAbs = ringBuffer.totalWritten;
+  playbackSpanStartAbs = playbackSpanEndAbs - samples.length;
   lastPlaybackSeconds = seconds;
   lastPlaybackLabel = pendingPlaybackLabel;
   pendingPlaybackLabel = null;
@@ -710,6 +719,27 @@ function highlightDurationSpan(seconds) {
   showTimelineHighlight(pct);
 }
 
+// The stretch of buffer the current replay is drawn from. Lives outside
+// #timeline-track because renderTimeline() replaces that element's children
+// wholesale on every pass.
+function renderPlaybackSpan(model) {
+  if (!el.timelinePlaying) return;
+
+  if (!model || reducerState.mode !== PLAYBACK || playbackSpanEndAbs <= playbackSpanStartAbs) {
+    el.timelinePlaying.classList.add('hidden');
+    return;
+  }
+
+  const fraction = (abs) =>
+    Math.min(1, Math.max(0, (abs - model.windowStartAbs) / model.capacity));
+  const startPct = fraction(playbackSpanStartAbs) * 100;
+  const endPct = fraction(playbackSpanEndAbs) * 100;
+
+  el.timelinePlaying.style.left = `${startPct}%`;
+  el.timelinePlaying.style.width = `${Math.max(0, endPct - startPct)}%`;
+  el.timelinePlaying.classList.remove('hidden');
+}
+
 // --- timeline (buffer/take visualization) ---------------------------------
 
 // Hover is delegated to the container rather than bound per tick: the ticks
@@ -852,11 +882,25 @@ function render() {
   if (el.bufferText) {
     el.bufferText.textContent = `${formatMinSec(availableSeconds)} / ${formatMinSec(MAX_SECONDS)}`;
   }
-  renderTimeline(getTimelineModel());
+  const timelineModel = getTimelineModel();
+  renderTimeline(timelineModel);
+  renderPlaybackSpan(timelineModel);
 
   // Level meter only meaningful while recording.
   if (el.levelMeterContainer) {
     el.levelMeterContainer.classList.toggle('visible', mode === RECORD);
+  }
+
+  // Light up the key that launched the running replay, so the button, the
+  // key you pressed, and the lit span on the timeline all read as one thing.
+  // `q` matches no button, which is correct — it has no fixed duration.
+  for (const d of DURATIONS) {
+    const btn = document.getElementById(`duration-btn-${d.seconds}`);
+    if (!btn) continue;
+    const isPlaying = mode === PLAYBACK
+      && !lastPlaybackLabel
+      && d.seconds === lastPlaybackSeconds;
+    btn.classList.toggle('playing', isPlaying);
   }
 
   // Duration button annotations ("only 2:34" when buffer holds less than

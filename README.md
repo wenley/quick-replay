@@ -84,6 +84,11 @@ them, takes scroll off the left edge, and a take whose start has been
 overwritten stops showing a start marker, because that boundary is genuinely
 gone rather than sitting at the buffer edge.
 
+While a replay is running, the stretch of buffer it is drawn from is lit up on
+the timeline and the duration key that launched it is highlighted, so the key,
+the clip length, and the region being heard all read as one thing. Position
+*within* the clip is shown by the playback progress bar, not on the timeline.
+
 One thing the axis does **not** mean: because idle time is never stored, the
 timeline measures *recorded* audio, not wall-clock time. `-2:00` is two minutes
 of material back, which may be far longer ago in real time. Each take carries

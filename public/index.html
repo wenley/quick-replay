@@ -255,6 +255,19 @@
     pointer-events: none;
   }
 
+  /* The stretch of buffer the current replay is drawn from. Position within
+     it is deliberately not shown here — the playback progress bar covers
+     that; this answers "which part of the buffer am I hearing?". */
+  #timeline-playing {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    background: rgba(59, 130, 246, 0.28);
+    border: 2px solid var(--playback);
+    border-radius: 4px;
+    pointer-events: none;
+  }
+
   #timeline-axis {
     position: relative;
     height: 16px;
@@ -329,6 +342,18 @@
 
   .duration-btn:hover { border-color: var(--accent); }
   .duration-btn:active { transform: scale(0.97); }
+
+  /* The duration currently being replayed, so the key you pressed and the
+     span lit up on the timeline read as the same thing. */
+  .duration-btn.playing {
+    border-color: var(--playback);
+    background: #0d1420;
+  }
+  .duration-btn.playing .duration-label { color: var(--playback); }
+  .duration-btn.playing .duration-key {
+    color: var(--playback);
+    font-weight: 700;
+  }
 
   .duration-key {
     font-size: 0.8rem;
@@ -593,6 +618,7 @@
         <div id="timeline-ticks"></div>
         <div id="timeline-track-wrap">
           <div id="timeline-track"></div>
+          <div id="timeline-playing" class="hidden"></div>
           <div id="timeline-highlight" class="hidden"></div>
         </div>
         <div id="timeline-axis"></div>
