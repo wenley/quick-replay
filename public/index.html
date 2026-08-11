@@ -507,6 +507,71 @@
 
   #gain-clip-warning.visible { display: block; }
 
+  /* --- playback speed --- */
+
+  #speed-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  #speed-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--panel-border);
+    outline: none;
+  }
+
+  #speed-slider:focus-visible {
+    box-shadow: 0 0 0 2px var(--playback);
+  }
+
+  #speed-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  #speed-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  #speed-readout {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    min-width: 3.5em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #speed-value {
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+
+  /* Below full speed, call it out the same way the playback status line
+     does, so the slider and the status text read as one thing. */
+  #speed-value.slowed { color: var(--playback); }
+
+  #speed-note {
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin-top: 8px;
+    line-height: 1.4;
+  }
+
   #key-legend {
     display: flex;
     flex-wrap: wrap;
@@ -689,11 +754,27 @@
       <div id="gain-clip-warning">⚠ boost exceeds headroom — this replay will clip</div>
     </div>
 
+    <div id="speed-section">
+      <div class="section-label">Playback speed</div>
+      <div id="speed-row">
+        <input type="range" id="speed-slider" min="0.5" max="1" step="0.01" value="1"
+               aria-label="Playback speed multiplier" />
+        <div id="speed-readout">
+          <span id="speed-value">1.00x</span>
+        </div>
+      </div>
+      <div id="speed-note">
+        Below 1.00x, pitch is preserved — the material slows down without
+        dropping in pitch. Changing speed mid-replay restarts the current clip.
+      </div>
+    </div>
+
     <div id="key-legend">
       <div><kbd>1</kbd>–<kbd>6</kbd> replay duration</div>
       <div><kbd>r</kbd> Record</div>
       <div><kbd>s</kbd> Standby</div>
       <div><kbd>l</kbd> Toggle looping</div>
+      <div><kbd>x</kbd> Cycle playback speed</div>
       <div><kbd>Space</kbd> back to previous mode</div>
       <div><kbd>Esc</kbd> back to Standby</div>
       <div><kbd>↑</kbd><kbd>↓</kbd> volume &plusmn;1 dB</div>

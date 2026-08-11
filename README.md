@@ -46,6 +46,7 @@ on your network.
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
 | `l` | Toggle looping on/off |
+| `x` | Cycle playback speed: 1.0x → 0.75x → 0.5x → 1.0x |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
 | `↑` / `↓` | Playback volume ±1 dB |
@@ -66,6 +67,31 @@ appears when the current gain would push the most recent replay over 0 dBFS.
 
 Note this affects **playback only** — capture stays raw and unmodified, so
 turning it up never degrades what's stored in the buffer.
+
+## Slowed playback
+
+Press `x` to cycle playback speed — 1.0x → 0.75x → 0.5x → back to 1.0x — or use
+the **Playback speed** slider for anything in between, down to 0.5x. This is
+for studying a sung phrase: slowing it down does **not** transpose it down in
+pitch. A plain `playbackRate` on a raw audio buffer would do that (slower
+playback = lower pitch, the vinyl-record effect), which is exactly what this
+avoids.
+
+The trick is who does the time-stretching. At 1.0x, quick-replay plays the
+clip through Web Audio the normal way — instant, zero added latency. Below
+1.0x, it instead hands the clip to a hidden `<audio>` element with
+`preservesPitch` enabled and routes its output back through the same Web
+Audio gain node. That's the browser's own native pitch-preserving
+time-stretcher — there's no hand-rolled phase vocoder or WSOLA here, just
+what Chrome already ships for exactly this purpose. The tradeoff is a small
+one-time delay to encode the clip before that first slowed play begins,
+which the 1.0x path never pays.
+
+Sustained vowels hold up well even at 0.5x — that's the material this is
+built for. Consonants and other transients smear somewhat at the slower
+speeds; that's inherent to time-domain stretching, not a bug. Changing speed
+while a clip is playing restarts it at the new speed rather than trying to
+switch speeds mid-stream. The setting persists across reloads, same as gain.
 
 ## Takes and the timeline
 

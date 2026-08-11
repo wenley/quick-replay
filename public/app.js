@@ -68,6 +68,8 @@ const el = {
   gainMult: document.getElementById('gain-mult'),
   gainClipWarning: document.getElementById('gain-clip-warning'),
   loopToggle: document.getElementById('loop-toggle'),
+  speedSlider: document.getElementById('speed-slider'),
+  speedValue: document.getElementById('speed-value'),
 };
 
 // --- module-level audio state ------------------------------------------
@@ -143,6 +145,40 @@ function loadStoredLooping() {
 }
 
 let looping = loadStoredLooping();
+
+// Pitch-preserving playback slowdown. 1.0 keeps the existing zero-latency
+// AudioBufferSourceNode path completely untouched; anything below 1.0 takes
+// a separate HTMLMediaElement path instead (see playMediaPass), because
+// AudioBufferSourceNode.playbackRate resamples — it would drop the pitch
+// along with the speed, which is exactly what pitch-preserving means we
+// must not do. Speed never exceeds 1.0; this app never speeds audio up.
+// Like looping (and unlike gain), it doesn't need audioCtx to load, so it's
+// read from storage eagerly here rather than deferred to arm-time.
+const SPEED_STORAGE_KEY = 'quick-replay:speed';
+const SPEED_MIN = 0.5;
+const SPEED_MAX = 1.0;
+
+function loadStoredSpeed() {
+  try {
+    const raw = localStorage.getItem(SPEED_STORAGE_KEY);
+    const value = Number(raw);
+    if (raw !== null && Number.isFinite(value)) {
+      return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
+    }
+  } catch { /* private mode / storage disabled — fall through to default */ }
+  return 1;
+}
+
+let speed = loadStoredSpeed();
+
+// The media-element playback path (speed < 1.0 only). Created lazily, once,
+// on first use — createMediaElementSource() throws if called twice on the
+// same element, and a fresh element+node per playback would leak nodes.
+// Every subsequent slowed playback just swaps `src` on the same element.
+let mediaAudioEl = null;
+let mediaSourceNode = null;
+let mediaBlobUrl = null; // previous blob: URL, so it can be revoked before replacing
+let mediaClipSeconds = 0; // clip length in clip-time, for re-basing on a live rate change
 
 // --- small utils ---------------------------------------------------------
 
@@ -471,6 +507,59 @@ function renderGain() {
   }
 }
 
+// --- WAV encoding (for the media-element slowdown path) --------------------
+
+// Encodes mono Float32 samples as a 16-bit PCM WAV Blob. This exists only so
+// the clip can be handed to an <audio> element — HTMLMediaElement is what
+// gives us native pitch-preserving time-stretch via `preservesPitch`, and it
+// needs a real media resource, not a raw sample array.
+function encodeWavBlob(samples, sampleRate) {
+  const bytesPerSample = 2;
+  const dataSize = samples.length * bytesPerSample;
+  const buffer = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buffer);
+
+  function writeString(offset, str) {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+  }
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true); // fmt chunk size
+  view.setUint16(20, 1, true); // format = PCM
+  view.setUint16(22, 1, true); // channels = mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true); // byte rate
+  view.setUint16(32, bytesPerSample, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeString(36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, Math.round(clamped * (clamped < 0 ? 32768 : 32767)), true);
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+// Creates the reused <audio> element and its MediaElementAudioSourceNode
+// exactly once, wiring it into the same playbackGainNode every
+// AudioBufferSourceNode also goes through, so the gain slider applies either
+// way. Must never be called more than once per element instance — see the
+// module-level comment on `mediaAudioEl`.
+function ensureMediaElement() {
+  if (mediaAudioEl) return mediaAudioEl;
+  mediaAudioEl = new Audio();
+  mediaAudioEl.preload = 'auto';
+  mediaSourceNode = audioCtx.createMediaElementSource(mediaAudioEl);
+  mediaSourceNode.connect(playbackGainNode || audioCtx.destination);
+  return mediaAudioEl;
+}
+
 // --- playback --------------------------------------------------------------
 
 function startPlayback(seconds) {
@@ -512,6 +601,14 @@ function startPlayback(seconds) {
   }
   lastPlaybackPeak = peak;
   renderGain();
+
+  // At 1.0x, the existing zero-latency AudioBufferSourceNode path is
+  // untouched. Only below 1.0 do we pay for the WAV-encode + media-element
+  // detour required to get pitch-preserving slowdown.
+  if (speed < 1) {
+    startMediaPlayback(samples, myPlaybackGen);
+    return;
+  }
 
   const buffer = audioCtx.createBuffer(1, samples.length, audioCtx.sampleRate);
   buffer.copyToChannel(samples, 0);
@@ -580,6 +677,83 @@ function playBuffer(buffer, myPlaybackGen) {
   startProgressLoop();
 }
 
+// Entry point for the speed < 1.0 path. Encodes the clip once per playback
+// (not once per loop pass — see playMediaPass) and hands it to the reused
+// <audio> element via a fresh object URL, revoking the previous one so a
+// multi-minute clip doesn't leak tens of MB per replay.
+function startMediaPlayback(samples, myPlaybackGen) {
+  const audioEl = ensureMediaElement();
+  const clipDurationSeconds = samples.length / audioCtx.sampleRate;
+
+  const blob = encodeWavBlob(samples, audioCtx.sampleRate);
+  const url = URL.createObjectURL(blob);
+  if (mediaBlobUrl) URL.revokeObjectURL(mediaBlobUrl);
+  mediaBlobUrl = url;
+  audioEl.src = url;
+
+  playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen);
+}
+
+// Plays one pass of `audioEl` (already loaded with the clip) at the current
+// `speed`. Mirrors playBuffer's structure and contract as closely as
+// possible: same generation guard, same "read `looping` fresh at the
+// boundary" restart, same progress-loop bookkeeping — just driving an
+// HTMLMediaElement instead of an AudioBufferSourceNode, since that's the
+// only thing that gets us native pitch-preserving time-stretch.
+function playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen) {
+  audioEl.playbackRate = speed;
+  audioEl.preservesPitch = true;
+  // Legacy aliases some browsers used before the property was standardized.
+  if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = true;
+  if ('mozPreservesPitch' in audioEl) audioEl.mozPreservesPitch = true;
+
+  audioEl.onended = () => {
+    // Same supersede guard as playBuffer's onended — an `ended` event
+    // arriving after the user hit Esc (or re-triggered, or changed speed)
+    // must not fire a mode transition for a playback that's no longer live.
+    if (myPlaybackGen !== playbackGeneration) return;
+    currentPlaybackSource = null;
+
+    if (looping) {
+      const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
+      setTimeout(() => {
+        if (myPlaybackGen !== playbackGeneration) return;
+        if (!looping) {
+          stopProgressLoop();
+          dispatch({ type: 'playbackEnded' });
+          return;
+        }
+        playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen);
+      }, delayMs);
+      return;
+    }
+
+    stopProgressLoop();
+    dispatch({ type: 'playbackEnded' });
+  };
+
+  currentPlaybackSource = audioEl;
+  mediaClipSeconds = clipDurationSeconds;
+  playbackStartTime = audioCtx.currentTime;
+  // Wall-clock duration at this speed — audioEl.duration isn't reliably
+  // available synchronously (metadata loads async even for an in-memory
+  // blob), so it's derived from the sample count computed up front instead.
+  playbackDurationSeconds = clipDurationSeconds / speed;
+
+  audioEl.currentTime = 0;
+  const playPromise = audioEl.play();
+  if (playPromise && typeof playPromise.catch === 'function') {
+    playPromise.catch((err) => {
+      if (myPlaybackGen !== playbackGeneration) return;
+      console.error('quick-replay: media playback failed', err);
+    });
+  }
+
+  // Idempotent restart, same reasoning as playBuffer's.
+  stopProgressLoop();
+  startProgressLoop();
+}
+
 function setLooping(value) {
   looping = value;
   try { localStorage.setItem(LOOP_STORAGE_KEY, looping ? '1' : '0'); } catch { /* ignore */ }
@@ -594,12 +768,83 @@ function toggleLooping() {
 function stopPlayback() {
   playbackGeneration++; // supersede — any pending onended becomes a no-op
   if (currentPlaybackSource) {
-    try { currentPlaybackSource.stop(); } catch { /* already stopped */ }
-    try { currentPlaybackSource.disconnect(); } catch { /* ignore */ }
+    if (currentPlaybackSource === mediaAudioEl) {
+      // Media-element path: pause and rewind rather than stop/disconnect —
+      // the element and its MediaElementAudioSourceNode are reused across
+      // every slowed playback, not torn down per-play.
+      try { currentPlaybackSource.pause(); } catch { /* ignore */ }
+      try { currentPlaybackSource.currentTime = 0; } catch { /* ignore */ }
+    } else {
+      try { currentPlaybackSource.stop(); } catch { /* already stopped */ }
+      try { currentPlaybackSource.disconnect(); } catch { /* ignore */ }
+    }
   }
   currentPlaybackSource = null;
   stopProgressLoop();
   renderPlaybackProgress(0);
+}
+
+function formatSpeed(value) {
+  return `${value.toFixed(2)}x`;
+}
+
+function renderSpeed() {
+  if (el.speedValue) el.speedValue.textContent = formatSpeed(speed);
+}
+
+function setSpeed(newSpeed, { fromSlider = false } = {}) {
+  const clamped = Math.min(SPEED_MAX, Math.max(SPEED_MIN, newSpeed));
+  const changed = Math.abs(clamped - speed) > 1e-9;
+  speed = clamped;
+
+  try { localStorage.setItem(SPEED_STORAGE_KEY, String(speed)); } catch { /* ignore */ }
+
+  if (!fromSlider && el.speedSlider) el.speedSlider.value = String(speed);
+  renderSpeed();
+
+  if (!changed || reducerState.mode !== PLAYBACK) return;
+
+  // Already stretching and staying stretched: retune in place. The browser's
+  // stretcher follows playbackRate live, so a restart would be gratuitous --
+  // and restarting means re-encoding the clip to WAV, which for a 5-minute
+  // take is ~14M samples re-serialised on every tick of a slider drag.
+  if (currentPlaybackSource === mediaAudioEl && mediaAudioEl && speed < SPEED_MAX) {
+    retuneMediaSpeed();
+    return;
+  }
+
+  // Crossing the 1.0 boundary swaps time-stretch engines (buffer source vs
+  // media element), which genuinely does need a restart. Reuse the exact
+  // re-trigger path a repeated duration keypress takes (handleDuration's
+  // PLAYBACK branch), so it goes through the supersede guard, not around it.
+  pendingPlaybackLabel = lastPlaybackLabel;
+  dispatch({ type: 'duration', seconds: lastPlaybackSeconds });
+}
+
+// Change the rate of a running media-element playback without restarting it.
+function retuneMediaSpeed() {
+  if (!mediaAudioEl || mediaClipSeconds <= 0) return;
+
+  const progress = Math.min(1, Math.max(0, mediaAudioEl.currentTime / mediaClipSeconds));
+  mediaAudioEl.playbackRate = speed;
+
+  // The progress bar measures wall-clock elapsed against total wall-clock
+  // duration, and both just changed. Re-base so the bar continues from where
+  // it is instead of jumping.
+  playbackDurationSeconds = mediaClipSeconds / speed;
+  playbackStartTime = audioCtx.currentTime - progress * playbackDurationSeconds;
+}
+
+// `x` — cycles 1.0 -> 0.75 -> 0.5 -> back to 1.0. Steps down from wherever
+// the slider currently sits (so an in-between slider value like 0.83 cycles
+// to the next step down rather than snapping to a fixed sequence position).
+function cycleSpeed() {
+  let next;
+  if (speed > 0.75 + 1e-9) next = 0.75;
+  else if (speed > 0.5 + 1e-9) next = 0.5;
+  else next = 1;
+  setSpeed(next);
+  flashMessage(`speed ${formatSpeed(next)}`);
 }
 
 // --- effect interpreter ------------------------------------------------
@@ -925,11 +1170,14 @@ function render() {
     const durationLabel = DURATIONS.find((d) => d.seconds === lastPlaybackSeconds);
     const label = lastPlaybackLabel
       || (durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds));
+    // Slowdown is otherwise invisible in this line, so make it explicit at a
+    // glance whenever a replay is actually running below full speed.
+    const speedSuffix = speed < 1 ? ` at ${formatSpeed(speed)} (pitch preserved)` : '';
     if (looping) {
-      el.playbackStatusText.textContent = `looping last ${label} (L to stop)`;
+      el.playbackStatusText.textContent = `looping last ${label}${speedSuffix} (L to stop)`;
     } else {
       const target = modeLabelText(reducerState.previousMode);
-      el.playbackStatusText.textContent = `playing last ${label} → returning to ${target}`;
+      el.playbackStatusText.textContent = `playing last ${label}${speedSuffix} → returning to ${target}`;
     }
   }
 
@@ -938,6 +1186,12 @@ function render() {
     el.loopToggle.textContent = looping ? 'On' : 'Off';
     el.loopToggle.classList.toggle('on', looping);
     el.loopToggle.setAttribute('aria-pressed', String(looping));
+  }
+
+  // Speed readout: call out visually whenever it's below full speed, not
+  // just in the playback status line (which only shows while playing).
+  if (el.speedValue) {
+    el.speedValue.classList.toggle('slowed', speed < 1);
   }
 }
 
@@ -970,9 +1224,11 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  // When the slider itself has focus, let its native arrow handling run and
-  // let the `input` event carry the change — otherwise we'd apply ±1 dB twice.
-  const sliderFocused = document.activeElement === el.gainSlider;
+  // When a slider itself has focus, let its native arrow handling run and
+  // let the `input` event carry the change — otherwise we'd apply ±1 dB
+  // twice for gain, or double-adjust the speed slider's own value.
+  const sliderFocused = document.activeElement === el.gainSlider
+    || document.activeElement === el.speedSlider;
 
   if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
     event.preventDefault();
@@ -1004,6 +1260,11 @@ window.addEventListener('keydown', (event) => {
   if (lower === 'l') {
     event.preventDefault();
     toggleLooping();
+    return;
+  }
+  if (lower === 'x') {
+    event.preventDefault();
+    cycleSpeed();
     return;
   }
 });
@@ -1038,6 +1299,22 @@ if (el.gainSlider) {
   // the user having to click away from the slider first.
   el.gainSlider.addEventListener('change', () => el.gainSlider.blur());
 }
+
+// --- speed slider ------------------------------------------------------------
+
+if (el.speedSlider) {
+  el.speedSlider.min = String(SPEED_MIN);
+  el.speedSlider.max = String(SPEED_MAX);
+  el.speedSlider.step = '0.01';
+  el.speedSlider.value = String(speed);
+  el.speedSlider.addEventListener('input', () => {
+    setSpeed(Number(el.speedSlider.value), { fromSlider: true });
+  });
+  // Same reasoning as the gain slider: hand focus back after a click so
+  // duration keys keep working without clicking away first.
+  el.speedSlider.addEventListener('change', () => el.speedSlider.blur());
+}
+renderSpeed();
 
 // --- focus warning -------------------------------------------------------
 
