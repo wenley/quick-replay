@@ -45,6 +45,7 @@ on your network.
 | `q` | Replay the current take from its start |
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
+| `l` | Toggle looping on/off |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
 | `↑` / `↓` | Playback volume ±1 dB |
@@ -66,12 +67,54 @@ appears when the current gain would push the most recent replay over 0 dBFS.
 Note this affects **playback only** — capture stays raw and unmodified, so
 turning it up never degrades what's stored in the buffer.
 
+## Takes and the timeline
+
+A **take** is one contiguous stretch of capture. Leaving Record — for Standby
+*or* for Playback — ends the current take, and returning starts a new one. The
+timeline marks those seams, so you can see at a glance whether a 30s replay will
+reach back past a boundary into the previous take.
+
+`q` replays the current take from its start, or from as far back as the buffer
+still holds if the take has grown longer than the buffer.
+
+Take markers are stored as absolute positions in the audio stream rather than as
+offsets into the ring buffer. Once the buffer fills and old audio starts being
+overwritten, the markers don't move — the retained window slides forward past
+them, takes scroll off the left edge, and a take whose start has been
+overwritten stops showing a start marker, because that boundary is genuinely
+gone rather than sitting at the buffer edge.
+
+One thing the axis does **not** mean: because idle time is never stored, the
+timeline measures *recorded* audio, not wall-clock time. `-2:00` is two minutes
+of material back, which may be far longer ago in real time. Each take carries
+its wall-clock start time in a tooltip if you need the real answer.
+
 ## Modes
 
 - **Standby** — not recording, mic released (indicator goes dark).
 - **Record** — actively capturing into the ring buffer.
 - **Playback** — replaying a fixed lookback window, then automatically
-  returning to whichever mode (Record or Standby) it was launched from.
+  returning to whichever mode (Record or Standby) it was launched from
+  (unless looping is on — see below).
+
+## Looping
+
+Press `l` (or click the **Looping** toggle) to arm looping mode. It's a
+global on/off switch, not tied to any one replay, and its setting persists
+across reloads.
+
+- **Off (default):** playback runs once, then returns to whichever mode
+  (Record or Standby) it was launched from.
+- **On:** when a clip finishes, it immediately replays the same clip again —
+  same audio, same duration — for as long as looping stays on. Playback mode
+  is held indefinitely instead of returning.
+
+Because looping is global, toggling it takes effect at the next natural
+boundary rather than mid-clip: flipping it on while a replay is already
+running makes that replay loop once it reaches the end; flipping it off
+during a loop lets the current pass finish before returning as normal — it
+never cuts audio short. The playback status line reads "looping last …"
+while a loop is running.
 
 ## Things worth knowing
 

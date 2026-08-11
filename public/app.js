@@ -66,6 +66,7 @@ const el = {
   gainDb: document.getElementById('gain-db'),
   gainMult: document.getElementById('gain-mult'),
   gainClipWarning: document.getElementById('gain-clip-warning'),
+  loopToggle: document.getElementById('loop-toggle'),
 };
 
 // --- module-level audio state ------------------------------------------
@@ -119,6 +120,26 @@ let lastPlaybackSeconds = 0;
 let lastPlaybackLabel = null;
 let pendingPlaybackLabel = null;
 let progressRaf = null;
+
+// Looping playback. Global toggle, not per-playback — it can be flipped at
+// any time, including mid-playback, and is read fresh at the moment each
+// pass ends (see playBuffer's onended). It intentionally does not need
+// audioCtx to load, unlike gain, so it's read from storage eagerly here
+// rather than deferred to arm-time.
+const LOOP_STORAGE_KEY = 'quick-replay:looping';
+// Floor on the gap between passes. Without it, a pathologically short clip
+// (e.g. a 1-frame take) would have onended fire again almost immediately,
+// spinning the event loop in a tight restart cycle.
+const MIN_LOOP_PASS_SECONDS = 0.1;
+
+function loadStoredLooping() {
+  try {
+    return localStorage.getItem(LOOP_STORAGE_KEY) === '1';
+  } catch { /* private mode / storage disabled — fall through to default */ }
+  return false;
+}
+
+let looping = loadStoredLooping();
 
 // --- small utils ---------------------------------------------------------
 
@@ -486,6 +507,21 @@ function startPlayback(seconds) {
   const buffer = audioCtx.createBuffer(1, samples.length, audioCtx.sampleRate);
   buffer.copyToChannel(samples, 0);
 
+  playBuffer(buffer, myPlaybackGen);
+}
+
+// Plays one pass of `buffer` through playbackGainNode. Used both for the
+// initial playback and for every looping restart — the restart path reuses
+// the exact same AudioBuffer rather than re-reading the ring buffer, so a
+// looped clip is guaranteed to be the same audio on every pass.
+//
+// A fresh AudioBufferSourceNode is created per pass (never
+// `source.loop = true`): that keeps every pass going through the same
+// onended -> generation-guard -> dispatch accounting as a one-shot playback,
+// which is what makes "finish the current pass, then stop" possible when
+// looping is toggled off mid-playback, and what lets the progress bar reset
+// per pass instead of pinning at 100%.
+function playBuffer(buffer, myPlaybackGen) {
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
   source.connect(playbackGainNode || audioCtx.destination);
@@ -494,17 +530,56 @@ function startPlayback(seconds) {
     // onended fires on manual .stop() too — no-op if this source has since
     // been superseded by a newer playback (re-trigger, back, escape, etc).
     if (myPlaybackGen !== playbackGeneration) return;
-    stopProgressLoop();
     currentPlaybackSource = null;
+
+    // Read `looping` fresh here, not at playback start — flipping it mid-
+    // playback must take effect at the next pass boundary, in either
+    // direction.
+    if (looping) {
+      // Restart the SAME buffer for another pass, without dispatching
+      // `playbackEnded` — that would leave Playback mode, which looping
+      // must not do. Floor the gap so a very short clip can't restart faster
+      // than MIN_LOOP_PASS_SECONDS.
+      const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
+      setTimeout(() => {
+        if (myPlaybackGen !== playbackGeneration) return;
+        if (!looping) {
+          // Toggled off during the gap: finish as a normal (non-looping)
+          // ending rather than starting another pass.
+          stopProgressLoop();
+          dispatch({ type: 'playbackEnded' });
+          return;
+        }
+        playBuffer(buffer, myPlaybackGen);
+      }, delayMs);
+      return;
+    }
+
+    stopProgressLoop();
     dispatch({ type: 'playbackEnded' });
   };
 
   currentPlaybackSource = source;
   playbackStartTime = audioCtx.currentTime;
-  playbackDurationSeconds = samples.length / audioCtx.sampleRate;
+  playbackDurationSeconds = buffer.duration;
 
   source.start();
+  // Idempotent restart: a prior pass's loop may already have wound down to
+  // progressRaf === null (ratio hit 1), or may still have a frame pending —
+  // either way this guarantees exactly one loop is driving the bar.
+  stopProgressLoop();
   startProgressLoop();
+}
+
+function setLooping(value) {
+  looping = value;
+  try { localStorage.setItem(LOOP_STORAGE_KEY, looping ? '1' : '0'); } catch { /* ignore */ }
+  render();
+}
+
+function toggleLooping() {
+  setLooping(!looping);
+  flashMessage(looping ? 'looping on' : 'looping off');
 }
 
 function stopPlayback() {
@@ -806,8 +881,19 @@ function render() {
     const durationLabel = DURATIONS.find((d) => d.seconds === lastPlaybackSeconds);
     const label = lastPlaybackLabel
       || (durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds));
-    const target = modeLabelText(reducerState.previousMode);
-    el.playbackStatusText.textContent = `playing last ${label} → returning to ${target}`;
+    if (looping) {
+      el.playbackStatusText.textContent = `looping last ${label} (L to stop)`;
+    } else {
+      const target = modeLabelText(reducerState.previousMode);
+      el.playbackStatusText.textContent = `playing last ${label} → returning to ${target}`;
+    }
+  }
+
+  // Looping toggle.
+  if (el.loopToggle) {
+    el.loopToggle.textContent = looping ? 'On' : 'Off';
+    el.loopToggle.classList.toggle('on', looping);
+    el.loopToggle.setAttribute('aria-pressed', String(looping));
   }
 }
 
@@ -871,6 +957,11 @@ window.addEventListener('keydown', (event) => {
     dispatch({ type: 'mode', to: STANDBY });
     return;
   }
+  if (lower === 'l') {
+    event.preventDefault();
+    toggleLooping();
+    return;
+  }
 });
 
 // --- mouse (fallback) -------------------------------------------------
@@ -882,6 +973,13 @@ for (const d of DURATIONS) {
     btn.addEventListener('mouseenter', () => highlightDurationSpan(d.seconds));
     btn.addEventListener('mouseleave', hideTimelineHighlight);
   }
+}
+
+if (el.loopToggle) {
+  el.loopToggle.addEventListener('click', () => {
+    if (!armed) return;
+    toggleLooping();
+  });
 }
 
 // --- gain slider -----------------------------------------------------------
