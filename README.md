@@ -46,8 +46,24 @@ on your network.
 | `s` | Switch to Standby |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
+| `↑` / `↓` | Playback volume ±1 dB |
+| `0` | Reset volume to 0 dB |
 
 The browser tab must be focused for keys to register.
+
+## Playback volume
+
+A slider sets playback gain from **−30 dB (muted) to +18 dB (~8×)**, defaulting
+to 0 dB (unchanged). It's calibrated in dB rather than as a plain multiplier
+because loudness is perceived logarithmically — a linear multiplier would spend
+most of the slider's travel on boost and leave almost none for attenuation.
+
+Adjustments apply mid-replay, not just to the next one, and the setting persists
+across reloads. Boosting past the material's headroom will clip; a warning
+appears when the current gain would push the most recent replay over 0 dBFS.
+
+Note this affects **playback only** — capture stays raw and unmodified, so
+turning it up never degrades what's stored in the buffer.
 
 ## Modes
 

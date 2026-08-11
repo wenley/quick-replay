@@ -286,6 +286,74 @@
 
   /* key legend */
 
+  /* --- playback gain --- */
+
+  #gain-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  #gain-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--panel-border);
+    outline: none;
+  }
+
+  #gain-slider:focus-visible {
+    box-shadow: 0 0 0 2px var(--playback);
+  }
+
+  #gain-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  #gain-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+  }
+
+  #gain-readout {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    min-width: 5.5em;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #gain-db {
+    font-size: 1.1rem;
+    font-weight: 600;
+  }
+
+  #gain-mult {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+  }
+
+  #gain-clip-warning {
+    display: none;
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: var(--warn);
+  }
+
+  #gain-clip-warning.visible { display: block; }
+
   #key-legend {
     display: flex;
     flex-wrap: wrap;
@@ -437,12 +505,27 @@
       </div>
     </div>
 
+    <div id="gain-section">
+      <div class="section-label">Playback volume</div>
+      <div id="gain-row">
+        <input type="range" id="gain-slider" min="-30" max="18" step="1" value="0"
+               aria-label="Playback gain in decibels" />
+        <div id="gain-readout">
+          <span id="gain-db">0 dB</span>
+          <span id="gain-mult">1.00×</span>
+        </div>
+      </div>
+      <div id="gain-clip-warning">⚠ boost exceeds headroom — this replay will clip</div>
+    </div>
+
     <div id="key-legend">
       <div><kbd>1</kbd>–<kbd>6</kbd> replay duration</div>
       <div><kbd>r</kbd> Record</div>
       <div><kbd>s</kbd> Standby</div>
       <div><kbd>Space</kbd> back to previous mode</div>
       <div><kbd>Esc</kbd> back to Standby</div>
+      <div><kbd>↑</kbd><kbd>↓</kbd> volume &plusmn;1 dB</div>
+      <div><kbd>0</kbd> reset volume</div>
     </div>
 
     <div id="mic-note">

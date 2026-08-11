@@ -59,6 +59,10 @@ const el = {
   playbackProgressFill: document.getElementById('playback-progress-fill'),
   flashMessage: document.getElementById('flash-message'),
   focusBanner: document.getElementById('focus-banner'),
+  gainSlider: document.getElementById('gain-slider'),
+  gainDb: document.getElementById('gain-db'),
+  gainMult: document.getElementById('gain-mult'),
+  gainClipWarning: document.getElementById('gain-clip-warning'),
 };
 
 // --- module-level audio state ------------------------------------------
@@ -80,6 +84,17 @@ let generation = 0; // bumped on every dispatched event; guards async races
 let latestPeak = 0;
 let displayedLevel = 0;
 let levelRaf = null;
+
+// Playback gain. Expressed in dB because perceived loudness is logarithmic —
+// a linear multiplier slider would waste most of its travel on boost and
+// leave almost none for attenuation.
+const GAIN_MIN_DB = -30; // treated as mute
+const GAIN_MAX_DB = 18;
+const GAIN_STORAGE_KEY = 'quick-replay:gain-db';
+
+let gainDb = 0;
+let playbackGainNode = null;
+let lastPlaybackPeak = 0;
 
 // Playback
 let currentPlaybackSource = null;
@@ -297,6 +312,57 @@ function flush() {
   }
 }
 
+// --- playback gain ---------------------------------------------------------
+
+function dbToLinear(db) {
+  // The bottom of the range is a true mute rather than a very quiet signal.
+  if (db <= GAIN_MIN_DB) return 0;
+  return Math.pow(10, db / 20);
+}
+
+function loadStoredGainDb() {
+  try {
+    const raw = localStorage.getItem(GAIN_STORAGE_KEY);
+    const value = Number(raw);
+    if (raw !== null && Number.isFinite(value)) {
+      return Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, value));
+    }
+  } catch { /* private mode / storage disabled — fall through to default */ }
+  return 0;
+}
+
+function setGainDb(db, { fromSlider = false } = {}) {
+  gainDb = Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, Math.round(db)));
+
+  const linear = dbToLinear(gainDb);
+  if (playbackGainNode && audioCtx) {
+    // Ramp rather than jump, so adjusting mid-replay doesn't click.
+    playbackGainNode.gain.setTargetAtTime(linear, audioCtx.currentTime, 0.01);
+  }
+
+  try { localStorage.setItem(GAIN_STORAGE_KEY, String(gainDb)); } catch { /* ignore */ }
+
+  if (!fromSlider && el.gainSlider) el.gainSlider.value = String(gainDb);
+  renderGain();
+}
+
+function renderGain() {
+  const linear = dbToLinear(gainDb);
+  if (el.gainDb) {
+    el.gainDb.textContent = gainDb <= GAIN_MIN_DB
+      ? 'muted'
+      : `${gainDb > 0 ? '+' : ''}${gainDb} dB`;
+  }
+  if (el.gainMult) {
+    el.gainMult.textContent = `${linear.toFixed(2)}×`;
+  }
+  if (el.gainClipWarning) {
+    // Only meaningful once we know how hot the material being replayed is.
+    const willClip = lastPlaybackPeak > 0 && lastPlaybackPeak * linear > 1;
+    el.gainClipWarning.classList.toggle('visible', willClip);
+  }
+}
+
 // --- playback --------------------------------------------------------------
 
 function startPlayback(seconds) {
@@ -320,12 +386,23 @@ function startPlayback(seconds) {
     return;
   }
 
+  // Peak of the material being replayed, for the clip warning. Subsampled:
+  // a 5-minute window is ~14M samples and scanning all of them would add
+  // real latency to the one action this whole app exists to make instant.
+  let peak = 0;
+  for (let i = 0; i < samples.length; i += 16) {
+    const abs = Math.abs(samples[i]);
+    if (abs > peak) peak = abs;
+  }
+  lastPlaybackPeak = peak;
+  renderGain();
+
   const buffer = audioCtx.createBuffer(1, samples.length, audioCtx.sampleRate);
   buffer.copyToChannel(samples, 0);
 
   const source = audioCtx.createBufferSource();
   source.buffer = buffer;
-  source.connect(audioCtx.destination);
+  source.connect(playbackGainNode || audioCtx.destination);
 
   source.onended = () => {
     // onended fires on manual .stop() too — no-op if this source has since
@@ -517,6 +594,23 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
+  // When the slider itself has focus, let its native arrow handling run and
+  // let the `input` event carry the change — otherwise we'd apply ±1 dB twice.
+  const sliderFocused = document.activeElement === el.gainSlider;
+
+  if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
+    event.preventDefault();
+    setGainDb(gainDb + (key === 'ArrowUp' ? 1 : -1));
+    return;
+  }
+
+  if (key === '0') {
+    event.preventDefault();
+    setGainDb(0);
+    flashMessage('volume reset to 0 dB');
+    return;
+  }
+
   const lower = key.toLowerCase();
   if (lower === 'r') {
     dispatch({ type: 'mode', to: RECORD });
@@ -535,6 +629,19 @@ for (const d of DURATIONS) {
   if (btn) {
     btn.addEventListener('click', () => dispatchDuration(d.seconds));
   }
+}
+
+// --- gain slider -----------------------------------------------------------
+
+if (el.gainSlider) {
+  el.gainSlider.min = String(GAIN_MIN_DB);
+  el.gainSlider.max = String(GAIN_MAX_DB);
+  el.gainSlider.addEventListener('input', () => {
+    setGainDb(Number(el.gainSlider.value), { fromSlider: true });
+  });
+  // Hand focus back after a click, so the duration keys keep working without
+  // the user having to click away from the slider first.
+  el.gainSlider.addEventListener('change', () => el.gainSlider.blur());
 }
 
 // --- focus warning -------------------------------------------------------
@@ -570,6 +677,12 @@ if (el.armButton) {
 
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
+
+      // Persistent node every playback source routes through, so the slider
+      // takes effect mid-replay rather than only on the next one.
+      playbackGainNode = audioCtx.createGain();
+      playbackGainNode.connect(audioCtx.destination);
+      setGainDb(loadStoredGainDb());
 
       // Trigger the permission prompt once up front, then immediately
       // release — the browser remembers the grant per-origin so later
