@@ -21,6 +21,8 @@ import { encodeWavBlob } from './wav.ts';
 import { createTakeTracker, type TakeTracker } from './takes.ts';
 import { el, flashMessage, messageOf, showArmError, showRuntimeError, setFocusBannerVisible } from './dom.ts';
 import { createTimeline, type TimelineModel } from './timeline.ts';
+import { createGainControl } from './gain.ts';
+import { createSpeedControl, SPEED_MAX } from './speed.ts';
 
 // --- module-level audio state ------------------------------------------
 
@@ -42,17 +44,6 @@ let generation = 0; // bumped on every dispatched event; guards async races
 let latestPeak = 0;
 let displayedLevel = 0;
 let levelRaf: number | null = null;
-
-// Playback gain. Expressed in dB because perceived loudness is logarithmic —
-// a linear multiplier slider would waste most of its travel on boost and
-// leave almost none for attenuation.
-const GAIN_MIN_DB = -30; // treated as mute
-const GAIN_MAX_DB = 18;
-const GAIN_STORAGE_KEY = 'quick-replay:gain-db';
-
-let gainDb = 0;
-let playbackGainNode: GainNode | null = null;
-let lastPlaybackPeak = 0;
 
 // Playback
 let currentPlaybackSource: AudioBufferSourceNode | HTMLAudioElement | null = null;
@@ -85,31 +76,6 @@ function loadStoredLooping(): boolean {
 }
 
 let looping = loadStoredLooping();
-
-// Pitch-preserving playback slowdown. 1.0 keeps the existing zero-latency
-// AudioBufferSourceNode path completely untouched; anything below 1.0 takes
-// a separate HTMLMediaElement path instead (see playMediaPass), because
-// AudioBufferSourceNode.playbackRate resamples — it would drop the pitch
-// along with the speed, which is exactly what pitch-preserving means we
-// must not do. Speed never exceeds 1.0; this app never speeds audio up.
-// Like looping (and unlike gain), it doesn't need audioCtx to load, so it's
-// read from storage eagerly here rather than deferred to arm-time.
-const SPEED_STORAGE_KEY = 'quick-replay:speed';
-const SPEED_MIN = 0.25;
-const SPEED_MAX = 1.0;
-
-function loadStoredSpeed(): number {
-  try {
-    const raw = localStorage.getItem(SPEED_STORAGE_KEY);
-    const value = Number(raw);
-    if (raw !== null && Number.isFinite(value)) {
-      return Math.min(SPEED_MAX, Math.max(SPEED_MIN, value));
-    }
-  } catch { /* private mode / storage disabled — fall through to default */ }
-  return 1;
-}
-
-let speed = loadStoredSpeed();
 
 // The media-element playback path (speed < 1.0 only). Created lazily, once,
 // on first use — createMediaElementSource() throws if called twice on the
@@ -325,62 +291,11 @@ function getTimelineModel(): TimelineModel | null {
   };
 }
 
-// --- playback gain ---------------------------------------------------------
-
-function dbToLinear(db: number): number {
-  // The bottom of the range is a true mute rather than a very quiet signal.
-  if (db <= GAIN_MIN_DB) return 0;
-  return Math.pow(10, db / 20);
-}
-
-function loadStoredGainDb(): number {
-  try {
-    const raw = localStorage.getItem(GAIN_STORAGE_KEY);
-    const value = Number(raw);
-    if (raw !== null && Number.isFinite(value)) {
-      return Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, value));
-    }
-  } catch { /* private mode / storage disabled — fall through to default */ }
-  return 0;
-}
-
-function setGainDb(db: number, { fromSlider = false }: { fromSlider?: boolean } = {}): void {
-  gainDb = Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, Math.round(db)));
-
-  const linear = dbToLinear(gainDb);
-  if (playbackGainNode && audioCtx) {
-    // Ramp rather than jump, so adjusting mid-replay doesn't click.
-    playbackGainNode.gain.setTargetAtTime(linear, audioCtx.currentTime, 0.01);
-  }
-
-  try { localStorage.setItem(GAIN_STORAGE_KEY, String(gainDb)); } catch { /* ignore */ }
-
-  if (!fromSlider && el.gainSlider) el.gainSlider.value = String(gainDb);
-  renderGain();
-}
-
-function renderGain(): void {
-  const linear = dbToLinear(gainDb);
-  if (el.gainDb) {
-    el.gainDb.textContent = gainDb <= GAIN_MIN_DB
-      ? 'muted'
-      : `${gainDb > 0 ? '+' : ''}${gainDb} dB`;
-  }
-  if (el.gainMult) {
-    el.gainMult.textContent = `${linear.toFixed(2)}×`;
-  }
-  if (el.gainClipWarning) {
-    // Only meaningful once we know how hot the material being replayed is.
-    const willClip = lastPlaybackPeak > 0 && lastPlaybackPeak * linear > 1;
-    el.gainClipWarning.classList.toggle('visible', willClip);
-  }
-}
-
 // Creates the reused <audio> element and its MediaElementAudioSourceNode
-// exactly once, wiring it into the same playbackGainNode every
-// AudioBufferSourceNode also goes through, so the gain slider applies either
-// way. Must never be called more than once per element instance — see the
-// module-level comment on `mediaAudioEl`.
+// exactly once, wiring it into the same gain node every AudioBufferSourceNode
+// also goes through, so the gain slider applies either way. Must never be
+// called more than once per element instance — see the module-level comment
+// on `mediaAudioEl`.
 function ensureMediaElement(): HTMLAudioElement {
   if (mediaAudioEl) return mediaAudioEl;
   // Only reachable once armed, same invariant as acquireMic — audioCtx is
@@ -390,7 +305,7 @@ function ensureMediaElement(): HTMLAudioElement {
   mediaAudioEl = new Audio();
   mediaAudioEl.preload = 'auto';
   mediaSourceNode = ctx.createMediaElementSource(mediaAudioEl);
-  mediaSourceNode.connect(playbackGainNode || ctx.destination);
+  mediaSourceNode.connect(gainControl.node || ctx.destination);
   return mediaAudioEl;
 }
 
@@ -438,13 +353,12 @@ function startPlayback(seconds: number): void {
     const abs = Math.abs(samples[i]);
     if (abs > peak) peak = abs;
   }
-  lastPlaybackPeak = peak;
-  renderGain();
+  gainControl.setMaterialPeak(peak);
 
   // At 1.0x, the existing zero-latency AudioBufferSourceNode path is
   // untouched. Only below 1.0 do we pay for the WAV-encode + media-element
   // detour required to get pitch-preserving slowdown.
-  if (speed < 1) {
+  if (speedControl.value < 1) {
     startMediaPlayback(samples, myPlaybackGen);
     return;
   }
@@ -455,7 +369,7 @@ function startPlayback(seconds: number): void {
   playBuffer(buffer, myPlaybackGen);
 }
 
-// Plays one pass of `buffer` through playbackGainNode. Used both for the
+// Plays one pass of `buffer` through the gain control's node. Used both for the
 // initial playback and for every looping restart — the restart path reuses
 // the exact same AudioBuffer rather than re-reading the ring buffer, so a
 // looped clip is guaranteed to be the same audio on every pass.
@@ -472,7 +386,7 @@ function playBuffer(buffer: AudioBuffer, myPlaybackGen: number): void {
 
   const source = ctx.createBufferSource();
   source.buffer = buffer;
-  source.connect(playbackGainNode || ctx.destination);
+  source.connect(gainControl.node || ctx.destination);
 
   source.onended = () => {
     // onended fires on manual .stop() too — no-op if this source has since
@@ -556,7 +470,7 @@ function playMediaPass(audioEl: HTMLAudioElement, clipDurationSeconds: number, m
   if (!audioCtx) return;
   const ctx = audioCtx;
 
-  audioEl.playbackRate = speed;
+  audioEl.playbackRate = speedControl.value;
   audioEl.preservesPitch = true;
   // Legacy aliases some browsers used before the property was standardized.
   if ('webkitPreservesPitch' in audioEl) (audioEl as LegacyPreservesPitch).webkitPreservesPitch = true;
@@ -593,7 +507,7 @@ function playMediaPass(audioEl: HTMLAudioElement, clipDurationSeconds: number, m
   // Wall-clock duration at this speed — audioEl.duration isn't reliably
   // available synchronously (metadata loads async even for an in-memory
   // blob), so it's derived from the sample count computed up front instead.
-  playbackDurationSeconds = clipDurationSeconds / speed;
+  playbackDurationSeconds = clipDurationSeconds / speedControl.value;
 
   audioEl.currentTime = 0;
   const playPromise = audioEl.play();
@@ -641,65 +555,19 @@ function stopPlayback(): void {
   renderPlaybackProgress(0);
 }
 
-function renderSpeed(): void {
-  if (el.speedValue) el.speedValue.textContent = formatSpeed(speed);
-}
-
-function setSpeed(newSpeed: number, { fromSlider = false }: { fromSlider?: boolean } = {}): void {
-  const clamped = Math.min(SPEED_MAX, Math.max(SPEED_MIN, newSpeed));
-  const changed = Math.abs(clamped - speed) > 1e-9;
-  speed = clamped;
-
-  try { localStorage.setItem(SPEED_STORAGE_KEY, String(speed)); } catch { /* ignore */ }
-
-  if (!fromSlider && el.speedSlider) el.speedSlider.value = String(speed);
-  renderSpeed();
-
-  if (!changed || reducerState.mode !== PLAYBACK) return;
-
-  // Already stretching and staying stretched: retune in place. The browser's
-  // stretcher follows playbackRate live, so a restart would be gratuitous --
-  // and restarting means re-encoding the clip to WAV, which for a 5-minute
-  // take is ~14M samples re-serialised on every tick of a slider drag.
-  if (currentPlaybackSource === mediaAudioEl && mediaAudioEl && speed < SPEED_MAX) {
-    retuneMediaSpeed();
-    return;
-  }
-
-  // Crossing the 1.0 boundary swaps time-stretch engines (buffer source vs
-  // media element), which genuinely does need a restart. Reuse the exact
-  // re-trigger path a repeated duration keypress takes (handleDuration's
-  // PLAYBACK branch), so it goes through the supersede guard, not around it.
-  pendingPlaybackLabel = lastPlaybackLabel;
-  dispatch({ type: 'duration', seconds: lastPlaybackSeconds });
-}
-
 // Change the rate of a running media-element playback without restarting it.
 function retuneMediaSpeed(): void {
   if (!mediaAudioEl || mediaClipSeconds <= 0 || !audioCtx) return;
   const ctx = audioCtx;
 
   const progress = Math.min(1, Math.max(0, mediaAudioEl.currentTime / mediaClipSeconds));
-  mediaAudioEl.playbackRate = speed;
+  mediaAudioEl.playbackRate = speedControl.value;
 
   // The progress bar measures wall-clock elapsed against total wall-clock
   // duration, and both just changed. Re-base so the bar continues from where
   // it is instead of jumping.
-  playbackDurationSeconds = mediaClipSeconds / speed;
+  playbackDurationSeconds = mediaClipSeconds / speedControl.value;
   playbackStartTime = ctx.currentTime - progress * playbackDurationSeconds;
-}
-
-// `x` — cycles 1.0 -> 0.75 -> 0.5 -> back to 1.0. Steps down from wherever
-// the slider currently sits (so an in-between slider value like 0.83 cycles
-// to the next step down rather than snapping to a fixed sequence position).
-// Steps down through the presets and wraps back to full speed. Includes the
-// slider's floor so the keyboard can reach the whole range on its own.
-const SPEED_STEPS = [0.75, 0.5, 0.25];
-
-function cycleSpeed(): void {
-  const next = SPEED_STEPS.find((step) => speed > step + 1e-9) ?? SPEED_MAX;
-  setSpeed(next);
-  flashMessage(`speed ${formatSpeed(next)}`);
 }
 
 // --- effect interpreter ------------------------------------------------
@@ -867,7 +735,7 @@ function render(): void {
       || (durationLabel ? durationLabel.label : formatMinSec(lastPlaybackSeconds));
     // Slowdown is otherwise invisible in this line, so make it explicit at a
     // glance whenever a replay is actually running below full speed.
-    const speedSuffix = speed < 1 ? ` at ${formatSpeed(speed)} (pitch preserved)` : '';
+    const speedSuffix = speedControl.value < 1 ? ` at ${formatSpeed(speedControl.value)} (pitch preserved)` : '';
     if (looping) {
       el.playbackStatusText.textContent = `looping last ${label}${speedSuffix} (L to stop)`;
     } else {
@@ -886,7 +754,7 @@ function render(): void {
   // Speed readout: call out visually whenever it's below full speed, not
   // just in the playback status line (which only shows while playing).
   if (el.speedValue) {
-    el.speedValue.classList.toggle('slowed', speed < 1);
+    el.speedValue.classList.toggle('slowed', speedControl.value < 1);
   }
 }
 
@@ -927,13 +795,13 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
 
   if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
     event.preventDefault();
-    setGainDb(gainDb + (key === 'ArrowUp' ? 1 : -1));
+    gainControl.nudge(key === 'ArrowUp' ? 1 : -1);
     return;
   }
 
   if (key === '0') {
     event.preventDefault();
-    setGainDb(0);
+    gainControl.reset();
     flashMessage('volume reset to 0 dB');
     return;
   }
@@ -959,7 +827,7 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
   }
   if (lower === 'x') {
     event.preventDefault();
-    cycleSpeed();
+    speedControl.cycle();
     return;
   }
 });
@@ -982,36 +850,31 @@ if (el.loopToggle) {
   });
 }
 
-// --- gain slider -----------------------------------------------------------
+// --- gain control ------------------------------------------------------------
 
-if (el.gainSlider) {
-  const gainSlider = el.gainSlider;
-  gainSlider.min = String(GAIN_MIN_DB);
-  gainSlider.max = String(GAIN_MAX_DB);
-  gainSlider.addEventListener('input', () => {
-    setGainDb(Number(gainSlider.value), { fromSlider: true });
-  });
-  // Hand focus back after a click, so the duration keys keep working without
-  // the user having to click away from the slider first.
-  gainSlider.addEventListener('change', () => gainSlider.blur());
-}
+const gainControl = createGainControl();
 
-// --- speed slider ------------------------------------------------------------
+// --- speed control -------------------------------------------------------------
 
-if (el.speedSlider) {
-  const speedSlider = el.speedSlider;
-  speedSlider.min = String(SPEED_MIN);
-  speedSlider.max = String(SPEED_MAX);
-  speedSlider.step = '0.01';
-  speedSlider.value = String(speed);
-  speedSlider.addEventListener('input', () => {
-    setSpeed(Number(speedSlider.value), { fromSlider: true });
-  });
-  // Same reasoning as the gain slider: hand focus back after a click so
-  // duration keys keep working without clicking away first.
-  speedSlider.addEventListener('change', () => speedSlider.blur());
-}
-renderSpeed();
+const speedControl = createSpeedControl(() => {
+  if (reducerState.mode !== PLAYBACK) return;
+
+  // Already stretching and staying stretched: retune in place. The browser's
+  // stretcher follows playbackRate live, so a restart would be gratuitous --
+  // and restarting means re-encoding the clip to WAV, which for a 5-minute
+  // take is ~14M samples re-serialised on every tick of a slider drag.
+  if (currentPlaybackSource === mediaAudioEl && mediaAudioEl && speedControl.value < SPEED_MAX) {
+    retuneMediaSpeed();
+    return;
+  }
+
+  // Crossing the 1.0 boundary swaps time-stretch engines (buffer source vs
+  // media element), which genuinely does need a restart. Reuse the exact
+  // re-trigger path a repeated duration keypress takes (handleDuration's
+  // PLAYBACK branch), so it goes through the supersede guard, not around it.
+  pendingPlaybackLabel = lastPlaybackLabel;
+  dispatch({ type: 'duration', seconds: lastPlaybackSeconds });
+});
 
 // --- focus warning -------------------------------------------------------
 
@@ -1044,11 +907,7 @@ if (el.armButton) {
       ringBuffer = createRingBuffer(capacityFrames);
       takeTracker = createTakeTracker(ringBuffer);
 
-      // Persistent node every playback source routes through, so the slider
-      // takes effect mid-replay rather than only on the next one.
-      playbackGainNode = audioCtx.createGain();
-      playbackGainNode.connect(audioCtx.destination);
-      setGainDb(loadStoredGainDb());
+      gainControl.attach(audioCtx);
 
       // Trigger the permission prompt once up front, then immediately
       // release — the browser remembers the grant per-origin so later
