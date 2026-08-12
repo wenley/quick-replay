@@ -19,49 +19,7 @@ import { DURATIONS, MAX_SECONDS, MIC_CONSTRAINTS, type Duration } from './config
 import { formatMinSec, formatSpeed } from './format.ts';
 import { encodeWavBlob } from './wav.ts';
 import { createTakeTracker, type Take, type TakeTracker } from './takes.ts';
-
-// --- DOM refs ------------------------------------------------------------
-
-function byId(id: string): HTMLElement | null {
-  return document.getElementById(id);
-}
-
-function inputById(id: string): HTMLInputElement | null {
-  return document.getElementById(id) as HTMLInputElement | null;
-}
-
-function buttonById(id: string): HTMLButtonElement | null {
-  return document.getElementById(id) as HTMLButtonElement | null;
-}
-
-const el = {
-  armScreen: byId('arm-screen'),
-  armButton: buttonById('arm-button'),
-  armError: byId('arm-error'),
-  mainUi: byId('main-ui'),
-  modeIndicator: byId('mode-indicator'),
-  modeLabel: byId('mode-label'),
-  bufferText: byId('buffer-text'),
-  timelineTicks: byId('timeline-ticks'),
-  timelineTrack: byId('timeline-track'),
-  timelineAxis: byId('timeline-axis'),
-  timelineHighlight: byId('timeline-highlight'),
-  timelinePlaying: byId('timeline-playing'),
-  levelMeterContainer: byId('level-meter-container'),
-  levelMeterFill: byId('level-meter-fill'),
-  playbackStatus: byId('playback-status'),
-  playbackStatusText: byId('playback-status-text'),
-  playbackProgressFill: byId('playback-progress-fill'),
-  flashMessage: byId('flash-message'),
-  focusBanner: byId('focus-banner'),
-  gainSlider: inputById('gain-slider'),
-  gainDb: byId('gain-db'),
-  gainMult: byId('gain-mult'),
-  gainClipWarning: byId('gain-clip-warning'),
-  loopToggle: buttonById('loop-toggle'),
-  speedSlider: inputById('speed-slider'),
-  speedValue: byId('speed-value'),
-};
+import { el, flashMessage, messageOf, showArmError, showRuntimeError, setFocusBannerVisible } from './dom.ts';
 
 // --- module-level audio state ------------------------------------------
 
@@ -160,43 +118,6 @@ let mediaAudioEl: HTMLAudioElement | null = null;
 let mediaSourceNode: MediaElementAudioSourceNode | null = null;
 let mediaBlobUrl: string | null = null; // previous blob: URL, so it can be revoked before replacing
 let mediaClipSeconds = 0; // clip length in clip-time, for re-basing on a live rate change
-
-// --- small utils ---------------------------------------------------------
-
-let flashTimer: number | undefined;
-function flashMessage(text: string): void {
-  if (!el.flashMessage) return;
-  const flashEl = el.flashMessage;
-  flashEl.textContent = text;
-  flashEl.classList.add('visible');
-  clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => {
-    flashEl.classList.remove('visible');
-  }, 2000);
-}
-
-// Reads `.message` off an unknown error-shaped value without `any`. Returns
-// undefined when there is no truthy `message` property to read.
-function messageOf(err: unknown): unknown {
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    return (err as { message?: unknown }).message;
-  }
-  return undefined;
-}
-
-function showArmError(err: unknown): void {
-  console.error('quick-replay: arm failed', err);
-  if (el.armError) {
-    const detail = messageOf(err);
-    el.armError.textContent = `Failed to start: ${err && detail ? detail : err}`;
-    el.armError.classList.add('visible');
-  }
-}
-
-function showRuntimeError(message: string): void {
-  console.error('quick-replay:', message);
-  flashMessage(message);
-}
 
 // --- level meter ---------------------------------------------------------
 
@@ -1268,11 +1189,6 @@ if (el.speedSlider) {
 renderSpeed();
 
 // --- focus warning -------------------------------------------------------
-
-function setFocusBannerVisible(visible: boolean): void {
-  if (!el.focusBanner) return;
-  el.focusBanner.classList.toggle('visible', visible);
-}
 
 window.addEventListener('blur', () => setFocusBannerVisible(true));
 window.addEventListener('focus', () => setFocusBannerVisible(false));
