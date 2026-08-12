@@ -1346,7 +1346,7 @@ if (el.armButton) {
     try {
       audioCtx = new AudioContext();
       await audioCtx.resume();
-      await audioCtx.audioWorklet.addModule('./recorder-worklet.js');
+      await audioCtx.audioWorklet.addModule('./js/recorder-worklet.js');
 
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
