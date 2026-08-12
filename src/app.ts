@@ -6,17 +6,25 @@
 // logic lives here — only "how do I actually acquire a mic / start capture /
 // play a buffer" mechanics.
 
-import { createRingBuffer } from './js/ring-buffer.js';
+import { createRingBuffer, type RingBuffer } from './ring-buffer.ts';
 import {
   STANDBY, RECORD, PLAYBACK,
   ACQUIRE_MIC, RELEASE_MIC, START_CAPTURE, STOP_CAPTURE, FLUSH,
   START_PLAYBACK, STOP_PLAYBACK,
   initialState, reduce,
-} from './js/transitions.js';
+  type Mode, type Effect, type Event, type State,
+} from './transitions.ts';
+import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts';
 
 // --- config ------------------------------------------------------------
 
-const DURATIONS = [
+interface DurationOption {
+  key: string;
+  seconds: number;
+  label: string;
+}
+
+const DURATIONS: DurationOption[] = [
   { key: '1', seconds: 5, label: '5s' },
   { key: '2', seconds: 10, label: '10s' },
   { key: '3', seconds: 30, label: '30s' },
@@ -25,7 +33,7 @@ const DURATIONS = [
   { key: '6', seconds: 300, label: '5m' },
 ];
 
-function readMaxSeconds() {
+function readMaxSeconds(): number {
   const raw = document.body.dataset.maxLookbackSeconds;
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) {
@@ -43,54 +51,66 @@ const MAX_SECONDS = readMaxSeconds();
 
 // --- DOM refs ------------------------------------------------------------
 
+function byId(id: string): HTMLElement | null {
+  return document.getElementById(id);
+}
+
+function inputById(id: string): HTMLInputElement | null {
+  return document.getElementById(id) as HTMLInputElement | null;
+}
+
+function buttonById(id: string): HTMLButtonElement | null {
+  return document.getElementById(id) as HTMLButtonElement | null;
+}
+
 const el = {
-  armScreen: document.getElementById('arm-screen'),
-  armButton: document.getElementById('arm-button'),
-  armError: document.getElementById('arm-error'),
-  mainUi: document.getElementById('main-ui'),
-  modeIndicator: document.getElementById('mode-indicator'),
-  modeLabel: document.getElementById('mode-label'),
-  bufferText: document.getElementById('buffer-text'),
-  timelineTicks: document.getElementById('timeline-ticks'),
-  timelineTrack: document.getElementById('timeline-track'),
-  timelineAxis: document.getElementById('timeline-axis'),
-  timelineHighlight: document.getElementById('timeline-highlight'),
-  timelinePlaying: document.getElementById('timeline-playing'),
-  levelMeterContainer: document.getElementById('level-meter-container'),
-  levelMeterFill: document.getElementById('level-meter-fill'),
-  playbackStatus: document.getElementById('playback-status'),
-  playbackStatusText: document.getElementById('playback-status-text'),
-  playbackProgressFill: document.getElementById('playback-progress-fill'),
-  flashMessage: document.getElementById('flash-message'),
-  focusBanner: document.getElementById('focus-banner'),
-  gainSlider: document.getElementById('gain-slider'),
-  gainDb: document.getElementById('gain-db'),
-  gainMult: document.getElementById('gain-mult'),
-  gainClipWarning: document.getElementById('gain-clip-warning'),
-  loopToggle: document.getElementById('loop-toggle'),
-  speedSlider: document.getElementById('speed-slider'),
-  speedValue: document.getElementById('speed-value'),
+  armScreen: byId('arm-screen'),
+  armButton: buttonById('arm-button'),
+  armError: byId('arm-error'),
+  mainUi: byId('main-ui'),
+  modeIndicator: byId('mode-indicator'),
+  modeLabel: byId('mode-label'),
+  bufferText: byId('buffer-text'),
+  timelineTicks: byId('timeline-ticks'),
+  timelineTrack: byId('timeline-track'),
+  timelineAxis: byId('timeline-axis'),
+  timelineHighlight: byId('timeline-highlight'),
+  timelinePlaying: byId('timeline-playing'),
+  levelMeterContainer: byId('level-meter-container'),
+  levelMeterFill: byId('level-meter-fill'),
+  playbackStatus: byId('playback-status'),
+  playbackStatusText: byId('playback-status-text'),
+  playbackProgressFill: byId('playback-progress-fill'),
+  flashMessage: byId('flash-message'),
+  focusBanner: byId('focus-banner'),
+  gainSlider: inputById('gain-slider'),
+  gainDb: byId('gain-db'),
+  gainMult: byId('gain-mult'),
+  gainClipWarning: byId('gain-clip-warning'),
+  loopToggle: buttonById('loop-toggle'),
+  speedSlider: inputById('speed-slider'),
+  speedValue: byId('speed-value'),
 };
 
 // --- module-level audio state ------------------------------------------
 
-let audioCtx = null;
-let ringBuffer = null;
+let audioCtx: AudioContext | null = null;
+let ringBuffer: RingBuffer | null = null;
 let armed = false;
 
-let mediaStream = null;
-let sourceNode = null;
-let workletNode = null;
-let gainNode = null;
+let mediaStream: MediaStream | null = null;
+let sourceNode: MediaStreamAudioSourceNode | null = null;
+let workletNode: AudioWorkletNode | null = null;
+let gainNode: GainNode | null = null;
 let micHeld = false;
 
-let reducerState = initialState();
+let reducerState: State = initialState();
 let generation = 0; // bumped on every dispatched event; guards async races
 
 // Level meter
 let latestPeak = 0;
 let displayedLevel = 0;
-let levelRaf = null;
+let levelRaf: number | null = null;
 
 // Takes: contiguous stretches of capture, split whenever Record is left for
 // Standby or Playback. Boundaries are stored as ABSOLUTE frame positions
@@ -98,8 +118,15 @@ let levelRaf = null;
 // what makes them survive wraparound: once the buffer is full and old audio
 // starts being overwritten, the markers themselves never move — only the
 // retained window slides forward past them, and takes fall off the back.
-let takes = [];
-let currentTake = null;
+interface Take {
+  id: number;
+  startAbs: number;
+  endAbs: number;
+  wallClockStart: number;
+}
+
+let takes: Take[] = [];
+let currentTake: Take | null = null;
 let pendingNewTake = false;
 let takeCounter = 0; // stable ids, so labels don't renumber as takes are pruned
 
@@ -111,20 +138,20 @@ const GAIN_MAX_DB = 18;
 const GAIN_STORAGE_KEY = 'quick-replay:gain-db';
 
 let gainDb = 0;
-let playbackGainNode = null;
+let playbackGainNode: GainNode | null = null;
 let lastPlaybackPeak = 0;
 
 // Playback
-let currentPlaybackSource = null;
+let currentPlaybackSource: AudioBufferSourceNode | HTMLAudioElement | null = null;
 let playbackGeneration = 0; // bumped whenever a playback source is superseded
 let playbackStartTime = 0;
 let playbackDurationSeconds = 0;
 let lastPlaybackSeconds = 0;
-let lastPlaybackLabel = null;
-let pendingPlaybackLabel = null;
+let lastPlaybackLabel: string | null = null;
+let pendingPlaybackLabel: string | null = null;
 let playbackSpanStartAbs = 0;
 let playbackSpanEndAbs = 0;
-let progressRaf = null;
+let progressRaf: number | null = null;
 
 // Looping playback. Global toggle, not per-playback — it can be flipped at
 // any time, including mid-playback, and is read fresh at the moment each
@@ -137,7 +164,7 @@ const LOOP_STORAGE_KEY = 'quick-replay:looping';
 // spinning the event loop in a tight restart cycle.
 const MIN_LOOP_PASS_SECONDS = 0.1;
 
-function loadStoredLooping() {
+function loadStoredLooping(): boolean {
   try {
     return localStorage.getItem(LOOP_STORAGE_KEY) === '1';
   } catch { /* private mode / storage disabled — fall through to default */ }
@@ -158,7 +185,7 @@ const SPEED_STORAGE_KEY = 'quick-replay:speed';
 const SPEED_MIN = 0.25;
 const SPEED_MAX = 1.0;
 
-function loadStoredSpeed() {
+function loadStoredSpeed(): number {
   try {
     const raw = localStorage.getItem(SPEED_STORAGE_KEY);
     const value = Number(raw);
@@ -175,40 +202,51 @@ let speed = loadStoredSpeed();
 // on first use — createMediaElementSource() throws if called twice on the
 // same element, and a fresh element+node per playback would leak nodes.
 // Every subsequent slowed playback just swaps `src` on the same element.
-let mediaAudioEl = null;
-let mediaSourceNode = null;
-let mediaBlobUrl = null; // previous blob: URL, so it can be revoked before replacing
+let mediaAudioEl: HTMLAudioElement | null = null;
+let mediaSourceNode: MediaElementAudioSourceNode | null = null;
+let mediaBlobUrl: string | null = null; // previous blob: URL, so it can be revoked before replacing
 let mediaClipSeconds = 0; // clip length in clip-time, for re-basing on a live rate change
 
 // --- small utils ---------------------------------------------------------
 
-function formatMinSec(totalSeconds) {
+function formatMinSec(totalSeconds: number): string {
   const safe = Math.max(0, totalSeconds);
   const m = Math.floor(safe / 60);
   const s = Math.floor(safe % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-let flashTimer = null;
-function flashMessage(text) {
+let flashTimer: number | undefined;
+function flashMessage(text: string): void {
   if (!el.flashMessage) return;
-  el.flashMessage.textContent = text;
-  el.flashMessage.classList.add('visible');
+  const flashEl = el.flashMessage;
+  flashEl.textContent = text;
+  flashEl.classList.add('visible');
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => {
-    el.flashMessage.classList.remove('visible');
+    flashEl.classList.remove('visible');
   }, 2000);
 }
 
-function showArmError(err) {
+// Reads `.message` off an unknown error-shaped value without `any`. Returns
+// undefined when there is no truthy `message` property to read.
+function messageOf(err: unknown): unknown {
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    return (err as { message?: unknown }).message;
+  }
+  return undefined;
+}
+
+function showArmError(err: unknown): void {
   console.error('quick-replay: arm failed', err);
   if (el.armError) {
-    el.armError.textContent = `Failed to start: ${err && err.message ? err.message : err}`;
+    const detail = messageOf(err);
+    el.armError.textContent = `Failed to start: ${err && detail ? detail : err}`;
     el.armError.classList.add('visible');
   }
 }
 
-function showRuntimeError(message) {
+function showRuntimeError(message: string): void {
   console.error('quick-replay:', message);
   flashMessage(message);
 }
@@ -217,11 +255,11 @@ function showRuntimeError(message) {
 
 const LEVEL_DECAY = 0.85; // per animation frame, ~60fps
 
-function updateLevelMeterFromWorklet(peak) {
+function updateLevelMeterFromWorklet(peak: number): void {
   if (peak > latestPeak) latestPeak = peak;
 }
 
-function levelMeterTick() {
+function levelMeterTick(): void {
   displayedLevel = Math.max(latestPeak, displayedLevel * LEVEL_DECAY);
   latestPeak = 0;
   renderLevelMeter(displayedLevel);
@@ -235,13 +273,13 @@ function levelMeterTick() {
   }
 }
 
-function startLevelMeterLoop() {
+function startLevelMeterLoop(): void {
   if (levelRaf == null) {
     levelRaf = requestAnimationFrame(levelMeterTick);
   }
 }
 
-function renderLevelMeter(level) {
+function renderLevelMeter(level: number): void {
   if (!el.levelMeterFill) return;
   const pct = Math.min(100, Math.max(0, level * 100));
   el.levelMeterFill.style.width = `${pct}%`;
@@ -249,8 +287,8 @@ function renderLevelMeter(level) {
 
 // --- playback progress loop ----------------------------------------------
 
-function startProgressLoop() {
-  function tick() {
+function startProgressLoop(): void {
+  function tick(): void {
     if (!currentPlaybackSource || !audioCtx) return;
     const elapsed = audioCtx.currentTime - playbackStartTime;
     const ratio = playbackDurationSeconds > 0
@@ -266,19 +304,19 @@ function startProgressLoop() {
   progressRaf = requestAnimationFrame(tick);
 }
 
-function stopProgressLoop() {
+function stopProgressLoop(): void {
   if (progressRaf != null) cancelAnimationFrame(progressRaf);
   progressRaf = null;
 }
 
-function renderPlaybackProgress(ratio) {
+function renderPlaybackProgress(ratio: number): void {
   if (!el.playbackProgressFill) return;
   el.playbackProgressFill.style.width = `${Math.round(ratio * 100)}%`;
 }
 
 // --- mic lifecycle ---------------------------------------------------------
 
-const MIC_CONSTRAINTS = {
+const MIC_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
     echoCancellation: false,
     autoGainControl: false,
@@ -289,17 +327,18 @@ const MIC_CONSTRAINTS = {
 
 // Whether the app currently wants to be holding a mic. Playback deliberately
 // holds the stream when it came from Record, so returning is gapless.
-function micIsWanted() {
+function micIsWanted(): boolean {
   const { mode, previousMode } = reducerState;
   return mode === RECORD || (mode === PLAYBACK && previousMode === RECORD);
 }
 
-async function acquireMic() {
-  let stream;
+async function acquireMic(): Promise<void> {
+  let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
   } catch (err) {
-    showRuntimeError(`Microphone access failed: ${err.message || err}`);
+    const detail = messageOf(err);
+    showRuntimeError(`Microphone access failed: ${detail || err}`);
     throw err;
   }
 
@@ -312,18 +351,25 @@ async function acquireMic() {
     return;
   }
 
+  // Only reachable once armed (dispatch() gates on `armed`, which is only
+  // set after audioCtx/ringBuffer are created), so this can never actually
+  // be null here — but the compiler can't see that invariant.
+  if (!audioCtx || !ringBuffer) return;
+  const ctx = audioCtx;
+  const buffer = ringBuffer;
+
   mediaStream = stream;
-  sourceNode = audioCtx.createMediaStreamSource(stream);
-  workletNode = new AudioWorkletNode(audioCtx, 'recorder');
-  workletNode.port.onmessage = (event) => {
+  sourceNode = ctx.createMediaStreamSource(stream);
+  workletNode = new AudioWorkletNode(ctx, 'recorder');
+  workletNode.port.onmessage = (event: MessageEvent<RecorderAudioMessage>) => {
     const data = event.data;
     if (!data || data.type !== 'audio') return;
-    const startAbs = ringBuffer.totalWritten;
-    ringBuffer.write(data.samples);
-    noteCapturedFrames(startAbs, ringBuffer.totalWritten);
+    const startAbs = buffer.totalWritten;
+    buffer.write(data.samples);
+    noteCapturedFrames(startAbs, buffer.totalWritten);
     updateLevelMeterFromWorklet(data.peak);
   };
-  gainNode = audioCtx.createGain();
+  gainNode = ctx.createGain();
   gainNode.gain.value = 0;
 
   // source -> worklet -> gain(0) -> destination. The zero-gain path to
@@ -331,12 +377,12 @@ async function acquireMic() {
   // gain 0 prevents monitoring feedback.
   sourceNode.connect(workletNode);
   workletNode.connect(gainNode);
-  gainNode.connect(audioCtx.destination);
+  gainNode.connect(ctx.destination);
 
   micHeld = true;
 }
 
-function releaseMic() {
+function releaseMic(): void {
   // Must be idempotent: the reducer emits this even when no mic is held.
   if (!micHeld && !mediaStream) return;
 
@@ -367,7 +413,7 @@ function releaseMic() {
   micHeld = false;
 }
 
-function startCapture() {
+function startCapture(): void {
   // A dispatch that awaited getUserMedia can land here after a later event
   // has moved us out of Record; never enable capture outside Record, or we'd
   // record during playback and feed the speakers back into the mic.
@@ -376,20 +422,23 @@ function startCapture() {
   // playback — that discontinuity is exactly what the markers exist to show.
   pendingNewTake = true;
   if (workletNode) {
-    workletNode.port.postMessage({ type: 'recording', value: true });
+    const command: RecorderCommand = { type: 'recording', value: true };
+    workletNode.port.postMessage(command);
   }
   startLevelMeterLoop();
 }
 
-function stopCapture() {
+function stopCapture(): void {
   if (workletNode) {
-    workletNode.port.postMessage({ type: 'recording', value: false });
+    const command: RecorderCommand = { type: 'recording', value: false };
+    workletNode.port.postMessage(command);
   }
 }
 
-function flush() {
+function flush(): void {
   if (workletNode) {
-    workletNode.port.postMessage({ type: 'flush' });
+    const command: RecorderCommand = { type: 'flush' };
+    workletNode.port.postMessage(command);
   }
 }
 
@@ -400,7 +449,7 @@ function flush() {
 // worklet's flush round-trips through the audio thread, so the final ~85ms of
 // a take arrives *after* the transition. Extending the take on write means
 // that tail lands inside the take it belongs to instead of just outside it.
-function noteCapturedFrames(startAbs, endAbs) {
+function noteCapturedFrames(startAbs: number, endAbs: number): void {
   if (endAbs <= startAbs) return;
 
   if (pendingNewTake || !currentTake) {
@@ -416,7 +465,8 @@ function noteCapturedFrames(startAbs, endAbs) {
 
 // Drop takes the ring buffer has entirely overwritten, so the list can't grow
 // without bound across a long session.
-function pruneTakes() {
+function pruneTakes(): void {
+  if (!ringBuffer) return;
   const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
   if (takes.length && takes[0].endAbs <= oldestAbs) {
     takes = takes.filter((t) => t.endAbs > oldestAbs);
@@ -424,9 +474,15 @@ function pruneTakes() {
   }
 }
 
+interface TakeWindow {
+  startAbs: number;
+  frames: number;
+  trimmed: boolean;
+}
+
 // The most recent take, clamped to what the buffer still holds. Returns null
 // when there is nothing replayable.
-function currentTakeWindow() {
+function currentTakeWindow(): TakeWindow | null {
   if (!ringBuffer || takes.length === 0) return null;
   const take = takes[takes.length - 1];
   const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
@@ -436,10 +492,22 @@ function currentTakeWindow() {
   return { startAbs, frames, trimmed: take.startAbs < oldestAbs };
 }
 
+interface TimelineModel {
+  sampleRate: number;
+  maxSeconds: number;
+  capacity: number;
+  nowAbs: number;
+  windowStartAbs: number;
+  oldestAbs: number;
+  takes: Take[];
+  activeTake: Take | null;
+  durations: DurationOption[];
+}
+
 // Snapshot the renderer draws from. All positions are absolute frames; the
 // view window is [nowAbs - capacity, nowAbs], so "now" sits at the right edge
 // and everything scrolls leftward as recording continues.
-function getTimelineModel() {
+function getTimelineModel(): TimelineModel | null {
   if (!ringBuffer || !audioCtx) return null;
   const nowAbs = ringBuffer.totalWritten;
   const capacity = ringBuffer.capacity;
@@ -458,13 +526,13 @@ function getTimelineModel() {
 
 // --- playback gain ---------------------------------------------------------
 
-function dbToLinear(db) {
+function dbToLinear(db: number): number {
   // The bottom of the range is a true mute rather than a very quiet signal.
   if (db <= GAIN_MIN_DB) return 0;
   return Math.pow(10, db / 20);
 }
 
-function loadStoredGainDb() {
+function loadStoredGainDb(): number {
   try {
     const raw = localStorage.getItem(GAIN_STORAGE_KEY);
     const value = Number(raw);
@@ -475,7 +543,7 @@ function loadStoredGainDb() {
   return 0;
 }
 
-function setGainDb(db, { fromSlider = false } = {}) {
+function setGainDb(db: number, { fromSlider = false }: { fromSlider?: boolean } = {}): void {
   gainDb = Math.min(GAIN_MAX_DB, Math.max(GAIN_MIN_DB, Math.round(db)));
 
   const linear = dbToLinear(gainDb);
@@ -490,7 +558,7 @@ function setGainDb(db, { fromSlider = false } = {}) {
   renderGain();
 }
 
-function renderGain() {
+function renderGain(): void {
   const linear = dbToLinear(gainDb);
   if (el.gainDb) {
     el.gainDb.textContent = gainDb <= GAIN_MIN_DB
@@ -513,13 +581,13 @@ function renderGain() {
 // the clip can be handed to an <audio> element — HTMLMediaElement is what
 // gives us native pitch-preserving time-stretch via `preservesPitch`, and it
 // needs a real media resource, not a raw sample array.
-function encodeWavBlob(samples, sampleRate) {
+function encodeWavBlob(samples: Float32Array, sampleRate: number): Blob {
   const bytesPerSample = 2;
   const dataSize = samples.length * bytesPerSample;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
 
-  function writeString(offset, str) {
+  function writeString(offset: number, str: string): void {
     for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
   }
 
@@ -551,25 +619,34 @@ function encodeWavBlob(samples, sampleRate) {
 // AudioBufferSourceNode also goes through, so the gain slider applies either
 // way. Must never be called more than once per element instance — see the
 // module-level comment on `mediaAudioEl`.
-function ensureMediaElement() {
+function ensureMediaElement(): HTMLAudioElement {
   if (mediaAudioEl) return mediaAudioEl;
+  // Only reachable once armed, same invariant as acquireMic — audioCtx is
+  // always set by the time any playback path runs.
+  if (!audioCtx) throw new Error('quick-replay: ensureMediaElement called before arming');
+  const ctx = audioCtx;
   mediaAudioEl = new Audio();
   mediaAudioEl.preload = 'auto';
-  mediaSourceNode = audioCtx.createMediaElementSource(mediaAudioEl);
-  mediaSourceNode.connect(playbackGainNode || audioCtx.destination);
+  mediaSourceNode = ctx.createMediaElementSource(mediaAudioEl);
+  mediaSourceNode.connect(playbackGainNode || ctx.destination);
   return mediaAudioEl;
 }
 
 // --- playback --------------------------------------------------------------
 
-function startPlayback(seconds) {
-  const frames = Math.floor(seconds * audioCtx.sampleRate);
-  const samples = ringBuffer.readLast(frames);
+function startPlayback(seconds: number): void {
+  // Only reachable once armed, via the START_PLAYBACK effect.
+  if (!audioCtx || !ringBuffer) return;
+  const ctx = audioCtx;
+  const buf = ringBuffer;
+
+  const frames = Math.floor(seconds * ctx.sampleRate);
+  const samples = buf.readLast(frames);
   // Which stretch of the buffer this replay is drawn from, in absolute frame
   // positions so the timeline can light it up. Captured here rather than
   // derived at render time because readLast may have returned fewer frames
   // than asked for, and the span must reflect what is actually being heard.
-  playbackSpanEndAbs = ringBuffer.totalWritten;
+  playbackSpanEndAbs = buf.totalWritten;
   playbackSpanStartAbs = playbackSpanEndAbs - samples.length;
   lastPlaybackSeconds = seconds;
   lastPlaybackLabel = pendingPlaybackLabel;
@@ -610,8 +687,8 @@ function startPlayback(seconds) {
     return;
   }
 
-  const buffer = audioCtx.createBuffer(1, samples.length, audioCtx.sampleRate);
-  buffer.copyToChannel(samples, 0);
+  const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+  buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
 
   playBuffer(buffer, myPlaybackGen);
 }
@@ -627,10 +704,13 @@ function startPlayback(seconds) {
 // which is what makes "finish the current pass, then stop" possible when
 // looping is toggled off mid-playback, and what lets the progress bar reset
 // per pass instead of pinning at 100%.
-function playBuffer(buffer, myPlaybackGen) {
-  const source = audioCtx.createBufferSource();
+function playBuffer(buffer: AudioBuffer, myPlaybackGen: number): void {
+  if (!audioCtx) return;
+  const ctx = audioCtx;
+
+  const source = ctx.createBufferSource();
   source.buffer = buffer;
-  source.connect(playbackGainNode || audioCtx.destination);
+  source.connect(playbackGainNode || ctx.destination);
 
   source.onended = () => {
     // onended fires on manual .stop() too — no-op if this source has since
@@ -666,7 +746,7 @@ function playBuffer(buffer, myPlaybackGen) {
   };
 
   currentPlaybackSource = source;
-  playbackStartTime = audioCtx.currentTime;
+  playbackStartTime = ctx.currentTime;
   playbackDurationSeconds = buffer.duration;
 
   source.start();
@@ -681,11 +761,14 @@ function playBuffer(buffer, myPlaybackGen) {
 // (not once per loop pass — see playMediaPass) and hands it to the reused
 // <audio> element via a fresh object URL, revoking the previous one so a
 // multi-minute clip doesn't leak tens of MB per replay.
-function startMediaPlayback(samples, myPlaybackGen) {
-  const audioEl = ensureMediaElement();
-  const clipDurationSeconds = samples.length / audioCtx.sampleRate;
+function startMediaPlayback(samples: Float32Array, myPlaybackGen: number): void {
+  if (!audioCtx) return;
+  const ctx = audioCtx;
 
-  const blob = encodeWavBlob(samples, audioCtx.sampleRate);
+  const audioEl = ensureMediaElement();
+  const clipDurationSeconds = samples.length / ctx.sampleRate;
+
+  const blob = encodeWavBlob(samples, ctx.sampleRate);
   const url = URL.createObjectURL(blob);
   if (mediaBlobUrl) URL.revokeObjectURL(mediaBlobUrl);
   mediaBlobUrl = url;
@@ -694,18 +777,28 @@ function startMediaPlayback(samples, myPlaybackGen) {
   playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen);
 }
 
+// Legacy aliases some browsers used before `preservesPitch` was
+// standardized. Not part of the DOM lib's HTMLMediaElement typings.
+interface LegacyPreservesPitch {
+  webkitPreservesPitch?: boolean;
+  mozPreservesPitch?: boolean;
+}
+
 // Plays one pass of `audioEl` (already loaded with the clip) at the current
 // `speed`. Mirrors playBuffer's structure and contract as closely as
 // possible: same generation guard, same "read `looping` fresh at the
 // boundary" restart, same progress-loop bookkeeping — just driving an
 // HTMLMediaElement instead of an AudioBufferSourceNode, since that's the
 // only thing that gets us native pitch-preserving time-stretch.
-function playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen) {
+function playMediaPass(audioEl: HTMLAudioElement, clipDurationSeconds: number, myPlaybackGen: number): void {
+  if (!audioCtx) return;
+  const ctx = audioCtx;
+
   audioEl.playbackRate = speed;
   audioEl.preservesPitch = true;
   // Legacy aliases some browsers used before the property was standardized.
-  if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = true;
-  if ('mozPreservesPitch' in audioEl) audioEl.mozPreservesPitch = true;
+  if ('webkitPreservesPitch' in audioEl) (audioEl as LegacyPreservesPitch).webkitPreservesPitch = true;
+  if ('mozPreservesPitch' in audioEl) (audioEl as LegacyPreservesPitch).mozPreservesPitch = true;
 
   audioEl.onended = () => {
     // Same supersede guard as playBuffer's onended — an `ended` event
@@ -734,7 +827,7 @@ function playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen) {
 
   currentPlaybackSource = audioEl;
   mediaClipSeconds = clipDurationSeconds;
-  playbackStartTime = audioCtx.currentTime;
+  playbackStartTime = ctx.currentTime;
   // Wall-clock duration at this speed — audioEl.duration isn't reliably
   // available synchronously (metadata loads async even for an in-memory
   // blob), so it's derived from the sample count computed up front instead.
@@ -743,7 +836,7 @@ function playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen) {
   audioEl.currentTime = 0;
   const playPromise = audioEl.play();
   if (playPromise && typeof playPromise.catch === 'function') {
-    playPromise.catch((err) => {
+    playPromise.catch((err: unknown) => {
       if (myPlaybackGen !== playbackGeneration) return;
       console.error('quick-replay: media playback failed', err);
     });
@@ -754,29 +847,31 @@ function playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen) {
   startProgressLoop();
 }
 
-function setLooping(value) {
+function setLooping(value: boolean): void {
   looping = value;
   try { localStorage.setItem(LOOP_STORAGE_KEY, looping ? '1' : '0'); } catch { /* ignore */ }
   render();
 }
 
-function toggleLooping() {
+function toggleLooping(): void {
   setLooping(!looping);
   flashMessage(looping ? 'looping on' : 'looping off');
 }
 
-function stopPlayback() {
+function stopPlayback(): void {
   playbackGeneration++; // supersede — any pending onended becomes a no-op
   if (currentPlaybackSource) {
-    if (currentPlaybackSource === mediaAudioEl) {
+    if (currentPlaybackSource instanceof HTMLAudioElement) {
       // Media-element path: pause and rewind rather than stop/disconnect —
       // the element and its MediaElementAudioSourceNode are reused across
       // every slowed playback, not torn down per-play.
-      try { currentPlaybackSource.pause(); } catch { /* ignore */ }
-      try { currentPlaybackSource.currentTime = 0; } catch { /* ignore */ }
+      const mediaSource = currentPlaybackSource;
+      try { mediaSource.pause(); } catch { /* ignore */ }
+      try { mediaSource.currentTime = 0; } catch { /* ignore */ }
     } else {
-      try { currentPlaybackSource.stop(); } catch { /* already stopped */ }
-      try { currentPlaybackSource.disconnect(); } catch { /* ignore */ }
+      const bufferSource = currentPlaybackSource;
+      try { bufferSource.stop(); } catch { /* already stopped */ }
+      try { bufferSource.disconnect(); } catch { /* ignore */ }
     }
   }
   currentPlaybackSource = null;
@@ -784,15 +879,15 @@ function stopPlayback() {
   renderPlaybackProgress(0);
 }
 
-function formatSpeed(value) {
+function formatSpeed(value: number): string {
   return `${value.toFixed(2)}x`;
 }
 
-function renderSpeed() {
+function renderSpeed(): void {
   if (el.speedValue) el.speedValue.textContent = formatSpeed(speed);
 }
 
-function setSpeed(newSpeed, { fromSlider = false } = {}) {
+function setSpeed(newSpeed: number, { fromSlider = false }: { fromSlider?: boolean } = {}): void {
   const clamped = Math.min(SPEED_MAX, Math.max(SPEED_MIN, newSpeed));
   const changed = Math.abs(clamped - speed) > 1e-9;
   speed = clamped;
@@ -822,8 +917,9 @@ function setSpeed(newSpeed, { fromSlider = false } = {}) {
 }
 
 // Change the rate of a running media-element playback without restarting it.
-function retuneMediaSpeed() {
-  if (!mediaAudioEl || mediaClipSeconds <= 0) return;
+function retuneMediaSpeed(): void {
+  if (!mediaAudioEl || mediaClipSeconds <= 0 || !audioCtx) return;
+  const ctx = audioCtx;
 
   const progress = Math.min(1, Math.max(0, mediaAudioEl.currentTime / mediaClipSeconds));
   mediaAudioEl.playbackRate = speed;
@@ -832,7 +928,7 @@ function retuneMediaSpeed() {
   // duration, and both just changed. Re-base so the bar continues from where
   // it is instead of jumping.
   playbackDurationSeconds = mediaClipSeconds / speed;
-  playbackStartTime = audioCtx.currentTime - progress * playbackDurationSeconds;
+  playbackStartTime = ctx.currentTime - progress * playbackDurationSeconds;
 }
 
 // `x` — cycles 1.0 -> 0.75 -> 0.5 -> back to 1.0. Steps down from wherever
@@ -842,7 +938,7 @@ function retuneMediaSpeed() {
 // slider's floor so the keyboard can reach the whole range on its own.
 const SPEED_STEPS = [0.75, 0.5, 0.25];
 
-function cycleSpeed() {
+function cycleSpeed(): void {
   const next = SPEED_STEPS.find((step) => speed > step + 1e-9) ?? SPEED_MAX;
   setSpeed(next);
   flashMessage(`speed ${formatSpeed(next)}`);
@@ -850,7 +946,7 @@ function cycleSpeed() {
 
 // --- effect interpreter ------------------------------------------------
 
-async function runEffect(eff) {
+async function runEffect(eff: Effect): Promise<void> {
   switch (eff.type) {
     case ACQUIRE_MIC:
       await acquireMic();
@@ -878,7 +974,7 @@ async function runEffect(eff) {
   }
 }
 
-async function dispatch(event) {
+async function dispatch(event: Event): Promise<void> {
   if (!armed) return;
 
   generation++;
@@ -895,7 +991,7 @@ async function dispatch(event) {
     if (myGen !== generation) break;
     try {
       await runEffect(eff);
-    } catch (err) {
+    } catch {
       // getUserMedia failed mid-flight (e.g. permission revoked). We've
       // already optimistically moved reducerState toward `record`; roll
       // back to standby rather than strand the UI in a mode with no mic.
@@ -909,7 +1005,7 @@ async function dispatch(event) {
   render();
 }
 
-function dispatchDuration(seconds, label = null) {
+function dispatchDuration(seconds: number, label: string | null = null): void {
   if (!ringBuffer || ringBuffer.available === 0) {
     flashMessage('nothing recorded yet');
     return;
@@ -920,14 +1016,14 @@ function dispatchDuration(seconds, label = null) {
 
 // `q` — replay the current take from its start, or from as far back as the
 // buffer still holds if it has already been partly overwritten.
-function replayCurrentTake() {
-  const window = currentTakeWindow();
-  if (!window) {
+function replayCurrentTake(): void {
+  const takeWindow = currentTakeWindow();
+  if (!takeWindow || !audioCtx) {
     flashMessage('nothing recorded yet');
     return;
   }
-  const seconds = window.frames / audioCtx.sampleRate;
-  const label = window.trimmed
+  const seconds = takeWindow.frames / audioCtx.sampleRate;
+  const label = takeWindow.trimmed
     ? `take (${formatMinSec(seconds)}, trimmed to buffer)`
     : `take (${formatMinSec(seconds)})`;
   dispatchDuration(seconds, label);
@@ -935,7 +1031,7 @@ function replayCurrentTake() {
 
 // --- rendering -------------------------------------------------------------
 
-function modeLabelText(mode) {
+function modeLabelText(mode: Mode): string {
   if (mode === RECORD) return 'Record';
   if (mode === PLAYBACK) return 'Playback';
   return 'Standby';
@@ -943,7 +1039,7 @@ function modeLabelText(mode) {
 
 // --- timeline highlight (hover preview) -----------------------------------
 
-function showTimelineHighlight(pct) {
+function showTimelineHighlight(pct: number): void {
   if (!el.timelineHighlight) return;
   const clamped = Math.min(100, Math.max(0, pct));
   el.timelineHighlight.style.left = `${clamped}%`;
@@ -951,13 +1047,13 @@ function showTimelineHighlight(pct) {
   el.timelineHighlight.classList.remove('hidden');
 }
 
-function hideTimelineHighlight() {
+function hideTimelineHighlight(): void {
   if (!el.timelineHighlight) return;
   el.timelineHighlight.classList.add('hidden');
 }
 
 // Hovering a duration button previews the span of the track it would replay.
-function highlightDurationSpan(seconds) {
+function highlightDurationSpan(seconds: number): void {
   const model = getTimelineModel();
   if (!model || model.capacity <= 0) return;
   const targetAbs = model.nowAbs - seconds * model.sampleRate;
@@ -968,7 +1064,7 @@ function highlightDurationSpan(seconds) {
 // The stretch of buffer the current replay is drawn from. Lives outside
 // #timeline-track because renderTimeline() replaces that element's children
 // wholesale on every pass.
-function renderPlaybackSpan(model) {
+function renderPlaybackSpan(model: TimelineModel | null): void {
   if (!el.timelinePlaying) return;
 
   if (!model || reducerState.mode !== PLAYBACK || playbackSpanEndAbs <= playbackSpanStartAbs) {
@@ -976,7 +1072,7 @@ function renderPlaybackSpan(model) {
     return;
   }
 
-  const fraction = (abs) =>
+  const fraction = (abs: number) =>
     Math.min(1, Math.max(0, (abs - model.windowStartAbs) / model.capacity));
   const startPct = fraction(playbackSpanStartAbs) * 100;
   const endPct = fraction(playbackSpanEndAbs) * 100;
@@ -992,41 +1088,45 @@ function renderPlaybackSpan(model) {
 // are rebuilt several times a second while recording, and a node replaced
 // mid-hover never fires its own mouseleave, which would strand the highlight.
 if (el.timelineTicks) {
-  el.timelineTicks.addEventListener('mouseover', (event) => {
-    const pct = event.target && event.target.dataset && event.target.dataset.pct;
-    if (pct !== undefined && pct !== null && pct !== '') showTimelineHighlight(Number(pct));
+  el.timelineTicks.addEventListener('mouseover', (event: MouseEvent) => {
+    const target = event.target;
+    const pct = target instanceof HTMLElement ? target.dataset.pct : undefined;
+    if (pct !== undefined && pct !== '') showTimelineHighlight(Number(pct));
   });
   el.timelineTicks.addEventListener('mouseleave', hideTimelineHighlight);
 }
 
 const AXIS_INTERVALS_SECONDS = [5, 10, 15, 30, 60, 120, 300];
 
-function pickAxisInterval(maxSeconds) {
+function pickAxisInterval(maxSeconds: number): number {
   for (const candidate of AXIS_INTERVALS_SECONDS) {
     if (maxSeconds / candidate <= 6) return candidate;
   }
   return AXIS_INTERVALS_SECONDS[AXIS_INTERVALS_SECONDS.length - 1];
 }
 
-function renderTimeline(model) {
+function renderTimeline(model: TimelineModel | null): void {
   if (!el.timelineTicks || !el.timelineTrack || !el.timelineAxis) return;
+  const ticksEl = el.timelineTicks;
+  const trackEl = el.timelineTrack;
+  const axisEl = el.timelineAxis;
 
   if (!model || model.capacity <= 0) {
-    el.timelineTicks.replaceChildren();
-    el.timelineTrack.replaceChildren();
-    el.timelineAxis.replaceChildren();
+    ticksEl.replaceChildren();
+    trackEl.replaceChildren();
+    axisEl.replaceChildren();
     hideTimelineHighlight();
     return;
   }
 
-  const fraction = (abs) => {
+  const fraction = (abs: number) => {
     const f = (abs - model.windowStartAbs) / model.capacity;
     return Math.min(1, Math.max(0, f));
   };
 
   // --- reach ticks: "how far back does duration N reach?" ---
   const ticksFrag = document.createDocumentFragment();
-  let lastLabelPct = null;
+  let lastLabelPct: number | null = null;
   for (const d of model.durations) {
     const targetAbs = model.nowAbs - d.seconds * model.sampleRate;
     const rawFraction = (targetAbs - model.windowStartAbs) / model.capacity;
@@ -1049,7 +1149,7 @@ function renderTimeline(model) {
       lastLabelPct = pct;
     }
   }
-  el.timelineTicks.replaceChildren(ticksFrag);
+  ticksEl.replaceChildren(ticksFrag);
 
   // --- track: unfilled headroom + one span per take + boundary markers ---
   const trackFrag = document.createDocumentFragment();
@@ -1085,7 +1185,7 @@ function renderTimeline(model) {
       trackFrag.appendChild(endMarker);
     }
   }
-  el.timelineTrack.replaceChildren(trackFrag);
+  trackEl.replaceChildren(trackFrag);
 
   // --- time axis: adaptive interval, "now" right-aligned ---
   const axisFrag = document.createDocumentFragment();
@@ -1105,10 +1205,10 @@ function renderTimeline(model) {
     }
     axisFrag.appendChild(label);
   }
-  el.timelineAxis.replaceChildren(axisFrag);
+  axisEl.replaceChildren(axisFrag);
 }
 
-function render() {
+function render(): void {
   if (!el.mainUi) return;
 
   const mode = reducerState.mode;
@@ -1198,7 +1298,7 @@ function render() {
 
 // --- keyboard ----------------------------------------------------------
 
-window.addEventListener('keydown', (event) => {
+window.addEventListener('keydown', (event: KeyboardEvent) => {
   if (!armed) return;
   if (event.metaKey || event.ctrlKey || event.altKey) return;
   if (event.repeat) return;
@@ -1291,35 +1391,37 @@ if (el.loopToggle) {
 // --- gain slider -----------------------------------------------------------
 
 if (el.gainSlider) {
-  el.gainSlider.min = String(GAIN_MIN_DB);
-  el.gainSlider.max = String(GAIN_MAX_DB);
-  el.gainSlider.addEventListener('input', () => {
-    setGainDb(Number(el.gainSlider.value), { fromSlider: true });
+  const gainSlider = el.gainSlider;
+  gainSlider.min = String(GAIN_MIN_DB);
+  gainSlider.max = String(GAIN_MAX_DB);
+  gainSlider.addEventListener('input', () => {
+    setGainDb(Number(gainSlider.value), { fromSlider: true });
   });
   // Hand focus back after a click, so the duration keys keep working without
   // the user having to click away from the slider first.
-  el.gainSlider.addEventListener('change', () => el.gainSlider.blur());
+  gainSlider.addEventListener('change', () => gainSlider.blur());
 }
 
 // --- speed slider ------------------------------------------------------------
 
 if (el.speedSlider) {
-  el.speedSlider.min = String(SPEED_MIN);
-  el.speedSlider.max = String(SPEED_MAX);
-  el.speedSlider.step = '0.01';
-  el.speedSlider.value = String(speed);
-  el.speedSlider.addEventListener('input', () => {
-    setSpeed(Number(el.speedSlider.value), { fromSlider: true });
+  const speedSlider = el.speedSlider;
+  speedSlider.min = String(SPEED_MIN);
+  speedSlider.max = String(SPEED_MAX);
+  speedSlider.step = '0.01';
+  speedSlider.value = String(speed);
+  speedSlider.addEventListener('input', () => {
+    setSpeed(Number(speedSlider.value), { fromSlider: true });
   });
   // Same reasoning as the gain slider: hand focus back after a click so
   // duration keys keep working without clicking away first.
-  el.speedSlider.addEventListener('change', () => el.speedSlider.blur());
+  speedSlider.addEventListener('change', () => speedSlider.blur());
 }
 renderSpeed();
 
 // --- focus warning -------------------------------------------------------
 
-function setFocusBannerVisible(visible) {
+function setFocusBannerVisible(visible: boolean): void {
   if (!el.focusBanner) return;
   el.focusBanner.classList.toggle('visible', visible);
 }
@@ -1329,7 +1431,7 @@ window.addEventListener('focus', () => setFocusBannerVisible(false));
 
 // --- unload guard --------------------------------------------------------
 
-window.addEventListener('beforeunload', (event) => {
+window.addEventListener('beforeunload', (event: BeforeUnloadEvent) => {
   if (ringBuffer && ringBuffer.available > 0) {
     event.preventDefault();
     event.returnValue = '';
@@ -1339,14 +1441,15 @@ window.addEventListener('beforeunload', (event) => {
 // --- bootstrap -------------------------------------------------------------
 
 if (el.armButton) {
-  el.armButton.addEventListener('click', async () => {
-    el.armButton.disabled = true;
+  const armButton = el.armButton;
+  armButton.addEventListener('click', async () => {
+    armButton.disabled = true;
     if (el.armError) el.armError.classList.remove('visible');
 
     try {
       audioCtx = new AudioContext();
       await audioCtx.resume();
-      await audioCtx.audioWorklet.addModule('./js/recorder-worklet.js');
+      await audioCtx.audioWorklet.addModule('./recorder-worklet.js');
 
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
@@ -1372,7 +1475,7 @@ if (el.armButton) {
       render();
     } catch (err) {
       showArmError(err);
-      el.armButton.disabled = false;
+      armButton.disabled = false;
     }
   });
 }
