@@ -18,6 +18,7 @@ import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts'
 import { DURATIONS, MAX_SECONDS, MIC_CONSTRAINTS, type Duration } from './config.ts';
 import { formatMinSec, formatSpeed } from './format.ts';
 import { encodeWavBlob } from './wav.ts';
+import { createTakeTracker, type Take, type TakeTracker } from './takes.ts';
 
 // --- DOM refs ------------------------------------------------------------
 
@@ -66,6 +67,7 @@ const el = {
 
 let audioCtx: AudioContext | null = null;
 let ringBuffer: RingBuffer | null = null;
+let takeTracker: TakeTracker | null = null;
 let armed = false;
 
 let mediaStream: MediaStream | null = null;
@@ -81,24 +83,6 @@ let generation = 0; // bumped on every dispatched event; guards async races
 let latestPeak = 0;
 let displayedLevel = 0;
 let levelRaf: number | null = null;
-
-// Takes: contiguous stretches of capture, split whenever Record is left for
-// Standby or Playback. Boundaries are stored as ABSOLUTE frame positions
-// (ringBuffer.totalWritten), never as offsets into the ring buffer. That is
-// what makes them survive wraparound: once the buffer is full and old audio
-// starts being overwritten, the markers themselves never move — only the
-// retained window slides forward past them, and takes fall off the back.
-interface Take {
-  id: number;
-  startAbs: number;
-  endAbs: number;
-  wallClockStart: number;
-}
-
-let takes: Take[] = [];
-let currentTake: Take | null = null;
-let pendingNewTake = false;
-let takeCounter = 0; // stable ids, so labels don't renumber as takes are pruned
 
 // Playback gain. Expressed in dB because perceived loudness is logarithmic —
 // a linear multiplier slider would waste most of its travel on boost and
@@ -311,6 +295,7 @@ async function acquireMic(): Promise<void> {
   if (!audioCtx || !ringBuffer) return;
   const ctx = audioCtx;
   const buffer = ringBuffer;
+  const tracker = takeTracker;
 
   mediaStream = stream;
   sourceNode = ctx.createMediaStreamSource(stream);
@@ -320,7 +305,7 @@ async function acquireMic(): Promise<void> {
     if (!data || data.type !== 'audio') return;
     const startAbs = buffer.totalWritten;
     buffer.write(data.samples);
-    noteCapturedFrames(startAbs, buffer.totalWritten);
+    tracker?.noteCapturedFrames(startAbs, buffer.totalWritten);
     updateLevelMeterFromWorklet(data.peak);
   };
   gainNode = ctx.createGain();
@@ -374,7 +359,7 @@ function startCapture(): void {
   if (reducerState.mode !== RECORD) return;
   // Every entry into Record begins a new take, including the return from a
   // playback — that discontinuity is exactly what the markers exist to show.
-  pendingNewTake = true;
+  takeTracker?.beginNewTake();
   if (workletNode) {
     const command: RecorderCommand = { type: 'recording', value: true };
     workletNode.port.postMessage(command);
@@ -396,55 +381,7 @@ function flush(): void {
   }
 }
 
-// --- takes -----------------------------------------------------------------
-
-// Called after every batch the worklet delivers. Deriving take boundaries
-// from the write stream rather than from the stopCapture effect matters: the
-// worklet's flush round-trips through the audio thread, so the final ~85ms of
-// a take arrives *after* the transition. Extending the take on write means
-// that tail lands inside the take it belongs to instead of just outside it.
-function noteCapturedFrames(startAbs: number, endAbs: number): void {
-  if (endAbs <= startAbs) return;
-
-  if (pendingNewTake || !currentTake) {
-    currentTake = { id: ++takeCounter, startAbs, endAbs, wallClockStart: Date.now() };
-    takes.push(currentTake);
-    pendingNewTake = false;
-  } else {
-    currentTake.endAbs = endAbs;
-  }
-
-  pruneTakes();
-}
-
-// Drop takes the ring buffer has entirely overwritten, so the list can't grow
-// without bound across a long session.
-function pruneTakes(): void {
-  if (!ringBuffer) return;
-  const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
-  if (takes.length && takes[0].endAbs <= oldestAbs) {
-    takes = takes.filter((t) => t.endAbs > oldestAbs);
-    if (currentTake && !takes.includes(currentTake)) currentTake = null;
-  }
-}
-
-interface TakeWindow {
-  startAbs: number;
-  frames: number;
-  trimmed: boolean;
-}
-
-// The most recent take, clamped to what the buffer still holds. Returns null
-// when there is nothing replayable.
-function currentTakeWindow(): TakeWindow | null {
-  if (!ringBuffer || takes.length === 0) return null;
-  const take = takes[takes.length - 1];
-  const oldestAbs = ringBuffer.totalWritten - ringBuffer.available;
-  const startAbs = Math.max(take.startAbs, oldestAbs);
-  const frames = ringBuffer.totalWritten - startAbs;
-  if (frames <= 0) return null;
-  return { startAbs, frames, trimmed: take.startAbs < oldestAbs };
-}
+// --- timeline model ----------------------------------------------------------
 
 interface TimelineModel {
   sampleRate: number;
@@ -453,7 +390,7 @@ interface TimelineModel {
   nowAbs: number;
   windowStartAbs: number;
   oldestAbs: number;
-  takes: Take[];
+  takes: readonly Take[];
   activeTake: Take | null;
   durations: Duration[];
 }
@@ -462,7 +399,7 @@ interface TimelineModel {
 // view window is [nowAbs - capacity, nowAbs], so "now" sits at the right edge
 // and everything scrolls leftward as recording continues.
 function getTimelineModel(): TimelineModel | null {
-  if (!ringBuffer || !audioCtx) return null;
+  if (!ringBuffer || !audioCtx || !takeTracker) return null;
   const nowAbs = ringBuffer.totalWritten;
   const capacity = ringBuffer.capacity;
   return {
@@ -472,8 +409,8 @@ function getTimelineModel(): TimelineModel | null {
     nowAbs,
     windowStartAbs: nowAbs - capacity,
     oldestAbs: nowAbs - ringBuffer.available,
-    takes,
-    activeTake: reducerState.mode === RECORD ? currentTake : null,
+    takes: takeTracker.takes,
+    activeTake: reducerState.mode === RECORD ? takeTracker.currentTake : null,
     durations: DURATIONS,
   };
 }
@@ -928,7 +865,7 @@ function dispatchDuration(seconds: number, label: string | null = null): void {
 // `q` — replay the current take from its start, or from as far back as the
 // buffer still holds if it has already been partly overwritten.
 function replayCurrentTake(): void {
-  const takeWindow = currentTakeWindow();
+  const takeWindow = takeTracker ? takeTracker.currentTakeWindow() : null;
   if (!takeWindow || !audioCtx) {
     flashMessage('nothing recorded yet');
     return;
@@ -1364,6 +1301,7 @@ if (el.armButton) {
 
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
+      takeTracker = createTakeTracker(ringBuffer);
 
       // Persistent node every playback source routes through, so the slider
       // takes effect mid-replay rather than only on the next one.
