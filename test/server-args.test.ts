@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArgs, contentTypeFor } from '../server.js';
+import { parseArgs, contentTypeFor } from '../server.ts';
 
 describe('parseArgs', () => {
   test('defaults when no args given', () => {

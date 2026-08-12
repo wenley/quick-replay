@@ -19,14 +19,26 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 
 const PLACEHOLDER = '__MAX_LOOKBACK_SECONDS__';
 
+/** Result of parsing CLI args. */
+export interface ParsedArgs {
+  max: number;
+  port: number;
+}
+
+/**
+ * Extract a human-readable message from an unknown thrown value.
+ */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * Parse CLI args into { max, port }. Pure function — throws on invalid
  * input instead of exiting, so it can be unit tested directly.
  *
- * @param {string[]} argv - e.g. process.argv.slice(2)
- * @returns {{ max: number, port: number }}
+ * @param argv - e.g. process.argv.slice(2)
  */
-export function parseArgs(argv) {
+export function parseArgs(argv: string[]): ParsedArgs {
   let max = DEFAULT_MAX_SECONDS;
   let port = DEFAULT_PORT;
 
@@ -74,11 +86,8 @@ export function parseArgs(argv) {
  * Map a filename (or path) to a Content-Type header value based on its
  * extension. `.js` MUST map to `text/javascript` — browsers reject ES
  * module <script type="module"> and AudioWorklet.addModule() otherwise.
- *
- * @param {string} filename
- * @returns {string}
  */
-export function contentTypeFor(filename) {
+export function contentTypeFor(filename: string): string {
   const ext = path.extname(filename).toLowerCase();
   switch (ext) {
     case '.js':
@@ -96,13 +105,18 @@ export function contentTypeFor(filename) {
   }
 }
 
-function formatMinSec(totalSeconds) {
+function formatMinSec(totalSeconds: number): string {
   const m = Math.floor(totalSeconds / 60);
   const s = Math.floor(totalSeconds % 60);
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function sendText(res, status, body, extraHeaders = {}) {
+function sendText(
+  res: http.ServerResponse,
+  status: number,
+  body: string,
+  extraHeaders: http.OutgoingHttpHeaders = {}
+): void {
   res.writeHead(status, {
     'Content-Type': 'text/plain; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
@@ -112,14 +126,19 @@ function sendText(res, status, body, extraHeaders = {}) {
   res.end(body);
 }
 
-function createRequestHandler(max) {
-  return function handleRequest(req, res) {
+function createRequestHandler(max: number): (req: http.IncomingMessage, res: http.ServerResponse) => void {
+  return function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       sendText(res, 405, 'Method Not Allowed');
       return;
     }
 
-    let urlPath;
+    if (req.url === undefined) {
+      sendText(res, 400, 'Bad Request');
+      return;
+    }
+
+    let urlPath: string;
     try {
       urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
     } catch {
@@ -170,14 +189,14 @@ function createRequestHandler(max) {
   };
 }
 
-function main() {
-  let max;
-  let port;
+function main(): void {
+  let max: number;
+  let port: number;
   try {
     ({ max, port } = parseArgs(process.argv.slice(2)));
   } catch (err) {
-    console.error(`Error: ${err.message}`);
-    console.error('Usage: node server.js [--max <seconds>] [--port <n>]');
+    console.error(`Error: ${errorMessage(err)}`);
+    console.error('Usage: node server.ts [--max <seconds>] [--port <n>]');
     process.exit(1);
     return;
   }
@@ -185,7 +204,7 @@ function main() {
   const server = http.createServer(createRequestHandler(max));
 
   server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
       console.error(`Error: port ${port} is already in use. Try a different port with --port <n>.`);
       process.exit(1);
     } else {

@@ -22,7 +22,7 @@ npm start
 ```
 
 `npm start` compiles `src/` and then starts the server; `npm run build && node
-server.js` is the same thing spelled out. Then open the printed URL, click
+server.ts` is the same thing spelled out. Then open the printed URL, click
 **Arm**, and grant microphone access when prompted.
 
 While editing, leave `npm run dev` running in a second terminal — that's
@@ -178,7 +178,7 @@ while a loop is running.
 src/          TypeScript sources for the browser
 public/js/    build output — generated, gitignored
 public/       index.html
-server.js     static file server
+server.ts     static file server (Node runs it directly, no build)
 test/         unit tests
 ```
 
