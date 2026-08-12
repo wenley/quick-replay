@@ -14,36 +14,26 @@ import {
   initialState, reduce,
   type Mode, type Effect, type Event, type State,
 } from './transitions.ts';
-import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts';
 import { DURATIONS, MAX_SECONDS, MIC_CONSTRAINTS } from './config.ts';
 import { formatMinSec, formatSpeed } from './format.ts';
 import { encodeWavBlob } from './wav.ts';
 import { createTakeTracker, type TakeTracker } from './takes.ts';
-import { el, flashMessage, messageOf, showArmError, showRuntimeError, setFocusBannerVisible } from './dom.ts';
+import { el, flashMessage, showArmError, setFocusBannerVisible, showRuntimeError } from './dom.ts';
 import { createTimeline, type TimelineModel } from './timeline.ts';
 import { createGainControl } from './gain.ts';
 import { createSpeedControl, SPEED_MAX } from './speed.ts';
+import { createCapture, type Capture } from './capture.ts';
 
 // --- module-level audio state ------------------------------------------
 
 let audioCtx: AudioContext | null = null;
 let ringBuffer: RingBuffer | null = null;
 let takeTracker: TakeTracker | null = null;
+let capture: Capture | null = null;
 let armed = false;
-
-let mediaStream: MediaStream | null = null;
-let sourceNode: MediaStreamAudioSourceNode | null = null;
-let workletNode: AudioWorkletNode | null = null;
-let gainNode: GainNode | null = null;
-let micHeld = false;
 
 let reducerState: State = initialState();
 let generation = 0; // bumped on every dispatched event; guards async races
-
-// Level meter
-let latestPeak = 0;
-let displayedLevel = 0;
-let levelRaf: number | null = null;
 
 // Playback
 let currentPlaybackSource: AudioBufferSourceNode | HTMLAudioElement | null = null;
@@ -86,40 +76,6 @@ let mediaSourceNode: MediaElementAudioSourceNode | null = null;
 let mediaBlobUrl: string | null = null; // previous blob: URL, so it can be revoked before replacing
 let mediaClipSeconds = 0; // clip length in clip-time, for re-basing on a live rate change
 
-// --- level meter ---------------------------------------------------------
-
-const LEVEL_DECAY = 0.85; // per animation frame, ~60fps
-
-function updateLevelMeterFromWorklet(peak: number): void {
-  if (peak > latestPeak) latestPeak = peak;
-}
-
-function levelMeterTick(): void {
-  displayedLevel = Math.max(latestPeak, displayedLevel * LEVEL_DECAY);
-  latestPeak = 0;
-  renderLevelMeter(displayedLevel);
-
-  if (reducerState.mode === RECORD) {
-    levelRaf = requestAnimationFrame(levelMeterTick);
-  } else {
-    // One last decay-to-zero frame, then stop.
-    levelRaf = null;
-    renderLevelMeter(0);
-  }
-}
-
-function startLevelMeterLoop(): void {
-  if (levelRaf == null) {
-    levelRaf = requestAnimationFrame(levelMeterTick);
-  }
-}
-
-function renderLevelMeter(level: number): void {
-  if (!el.levelMeterFill) return;
-  const pct = Math.min(100, Math.max(0, level * 100));
-  el.levelMeterFill.style.width = `${pct}%`;
-}
-
 // --- playback progress loop ----------------------------------------------
 
 function startProgressLoop(): void {
@@ -156,117 +112,6 @@ function renderPlaybackProgress(ratio: number): void {
 function micIsWanted(): boolean {
   const { mode, previousMode } = reducerState;
   return mode === RECORD || (mode === PLAYBACK && previousMode === RECORD);
-}
-
-async function acquireMic(): Promise<void> {
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
-  } catch (err) {
-    const detail = messageOf(err);
-    showRuntimeError(`Microphone access failed: ${detail || err}`);
-    throw err;
-  }
-
-  // Guard on *intent*, not on a bare event counter. Something may have
-  // superseded us during the ~100-300ms getUserMedia takes — but pressing
-  // `r` twice also bumps that counter, and must not strand us in Record
-  // with no mic. `micHeld` catches a concurrent acquire winning the race.
-  if (!micIsWanted() || micHeld) {
-    stream.getTracks().forEach((track) => track.stop());
-    return;
-  }
-
-  // Only reachable once armed (dispatch() gates on `armed`, which is only
-  // set after audioCtx/ringBuffer are created), so this can never actually
-  // be null here — but the compiler can't see that invariant.
-  if (!audioCtx || !ringBuffer) return;
-  const ctx = audioCtx;
-  const buffer = ringBuffer;
-  const tracker = takeTracker;
-
-  mediaStream = stream;
-  sourceNode = ctx.createMediaStreamSource(stream);
-  workletNode = new AudioWorkletNode(ctx, 'recorder');
-  workletNode.port.onmessage = (event: MessageEvent<RecorderAudioMessage>) => {
-    const data = event.data;
-    if (!data || data.type !== 'audio') return;
-    const startAbs = buffer.totalWritten;
-    buffer.write(data.samples);
-    tracker?.noteCapturedFrames(startAbs, buffer.totalWritten);
-    updateLevelMeterFromWorklet(data.peak);
-  };
-  gainNode = ctx.createGain();
-  gainNode.gain.value = 0;
-
-  // source -> worklet -> gain(0) -> destination. The zero-gain path to
-  // destination is required for the worklet to reliably be pulled, and
-  // gain 0 prevents monitoring feedback.
-  sourceNode.connect(workletNode);
-  workletNode.connect(gainNode);
-  gainNode.connect(ctx.destination);
-
-  micHeld = true;
-}
-
-function releaseMic(): void {
-  // Must be idempotent: the reducer emits this even when no mic is held.
-  if (!micHeld && !mediaStream) return;
-
-  // Stop the tracks first and synchronously — this is the privacy-critical
-  // step, and what actually darkens the OS mic indicator.
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((track) => track.stop());
-  }
-  try { sourceNode && sourceNode.disconnect(); } catch { /* ignore */ }
-
-  // A `flush` posted immediately before this (the reducer always emits
-  // stopCapture -> flush -> releaseMic) round-trips through the audio
-  // thread, so tearing the worklet down synchronously would discard the
-  // very tail it exists to preserve. Keep it alive briefly so that last
-  // <=85ms still lands in the ring buffer.
-  const pendingWorklet = workletNode;
-  const pendingGain = gainNode;
-  setTimeout(() => {
-    try { if (pendingWorklet) pendingWorklet.port.onmessage = null; } catch { /* ignore */ }
-    try { if (pendingWorklet) pendingWorklet.disconnect(); } catch { /* ignore */ }
-    try { if (pendingGain) pendingGain.disconnect(); } catch { /* ignore */ }
-  }, 100);
-
-  sourceNode = null;
-  workletNode = null;
-  gainNode = null;
-  mediaStream = null;
-  micHeld = false;
-}
-
-function startCapture(): void {
-  // A dispatch that awaited getUserMedia can land here after a later event
-  // has moved us out of Record; never enable capture outside Record, or we'd
-  // record during playback and feed the speakers back into the mic.
-  if (reducerState.mode !== RECORD) return;
-  // Every entry into Record begins a new take, including the return from a
-  // playback — that discontinuity is exactly what the markers exist to show.
-  takeTracker?.beginNewTake();
-  if (workletNode) {
-    const command: RecorderCommand = { type: 'recording', value: true };
-    workletNode.port.postMessage(command);
-  }
-  startLevelMeterLoop();
-}
-
-function stopCapture(): void {
-  if (workletNode) {
-    const command: RecorderCommand = { type: 'recording', value: false };
-    workletNode.port.postMessage(command);
-  }
-}
-
-function flush(): void {
-  if (workletNode) {
-    const command: RecorderCommand = { type: 'flush' };
-    workletNode.port.postMessage(command);
-  }
 }
 
 // --- timeline model ----------------------------------------------------------
@@ -575,19 +420,19 @@ function retuneMediaSpeed(): void {
 async function runEffect(eff: Effect): Promise<void> {
   switch (eff.type) {
     case ACQUIRE_MIC:
-      await acquireMic();
+      await capture?.acquire();
       break;
     case RELEASE_MIC:
-      releaseMic();
+      capture?.release();
       break;
     case START_CAPTURE:
-      startCapture();
+      capture?.start();
       break;
     case STOP_CAPTURE:
-      stopCapture();
+      capture?.stop();
       break;
     case FLUSH:
-      flush();
+      capture?.flush();
       break;
     case START_PLAYBACK:
       startPlayback(eff.seconds);
@@ -606,7 +451,7 @@ async function dispatch(event: Event): Promise<void> {
   generation++;
   const myGen = generation;
 
-  const { state: newState, effects } = reduce(reducerState, event, { micHeld });
+  const { state: newState, effects } = reduce(reducerState, event, { micHeld: capture ? capture.micHeld : false });
   reducerState = newState;
   render();
 
@@ -906,6 +751,16 @@ if (el.armButton) {
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
       takeTracker = createTakeTracker(ringBuffer);
+
+      capture = createCapture({
+        audioCtx,
+        ringBuffer,
+        isMicWanted: micIsWanted,
+        isRecording: () => reducerState.mode === RECORD,
+        onTakeBegin: () => takeTracker?.beginNewTake(),
+        onFramesCaptured: (startAbs, endAbs) => takeTracker?.noteCapturedFrames(startAbs, endAbs),
+        onError: showRuntimeError,
+      });
 
       gainControl.attach(audioCtx);
 
