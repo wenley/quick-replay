@@ -98,9 +98,14 @@ built for. Consonants and other transients smear somewhat at the slower
 speeds; that's inherent to time-domain stretching, not a bug. Expect that
 smearing to become clearly audible by 0.25x, where the stretcher is
 repeating each grain four times over: useful for picking apart a fast
-melisma note by note, less so for judging tone. Changing speed
-while a clip is playing restarts it at the new speed rather than trying to
-switch speeds mid-stream. The setting persists across reloads, same as gain.
+melisma note by note, less so for judging tone.
+
+Changing speed mid-clip usually retunes in place, without restarting — the
+browser's stretcher follows the rate live, and restarting would mean
+re-encoding the whole clip to WAV on every tick of a slider drag. The one
+exception is crossing the 1.0x boundary in either direction, which genuinely
+swaps time-stretch engines and so has to restart the clip. The setting
+persists across reloads, same as gain.
 
 ## Takes and the timeline
 
