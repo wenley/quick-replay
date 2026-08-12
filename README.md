@@ -8,7 +8,8 @@ time-to-replay is close to zero.
 
 ## Requirements
 
-- Node 18+
+- Node 24+ (earlier versions can't run the `.ts` sources directly, which the
+  tests rely on)
 - **Chrome.** It has the most reliable `AudioWorklet` support and remembers
   mic permission per-origin, so you're only prompted once. Safari's behavior
   here is flakier — stick with Chrome.
@@ -16,11 +17,16 @@ time-to-replay is close to zero.
 ## Run it
 
 ```
-node server.js
+npm install
+npm start
 ```
 
-Then open the printed URL, click **Arm**, and grant microphone access when
-prompted.
+`npm start` compiles `src/` and then starts the server; `npm run build && node
+server.js` is the same thing spelled out. Then open the printed URL, click
+**Arm**, and grant microphone access when prompted.
+
+While editing, leave `npm run dev` running in a second terminal — that's
+`tsc --watch`, so a browser reload picks up whatever you just saved.
 
 Flags:
 
@@ -166,6 +172,30 @@ while a loop is running.
 - Capture is raw — echo cancellation, auto gain control, and noise
   suppression are all disabled for fidelity.
 
+## Source layout
+
+```
+src/          TypeScript sources for the browser
+public/js/    build output — generated, gitignored
+public/       index.html
+server.js     static file server
+test/         unit tests
+```
+
+Two tsconfigs, because the two halves of the project should not be able to see
+each other's globals: `tsconfig.json` builds `src/` against the DOM with no
+Node types, and `tsconfig.node.json` type-checks the server and tests against
+Node with no DOM. `npm run typecheck` runs both.
+
+Imports name the `.ts` file directly (`./ring-buffer.ts`) rather than the
+conventional `.js`. That single specifier form resolves for Node — which runs
+the tests straight off the TypeScript, no build involved — as well as for tsc
+and the editor, and `rewriteRelativeImportExtensions` turns it into `.js` on
+emit so the browser gets a specifier pointing at a file that exists. Because
+the tests bypass the compiler this way, `erasableSyntaxOnly` is on: it rejects
+the TypeScript features Node's type stripper can't handle (enums, namespaces,
+constructor parameter properties) at check time rather than at run time.
+
 ## Testing
 
 ```
@@ -173,5 +203,5 @@ node --test
 ```
 
 The pure logic — ring buffer, mode transitions, CLI arg parsing — is unit
-tested with Node's built-in test runner. Audio I/O and UI behavior are
-verified by running the app in a browser.
+tested with Node's built-in test runner, which reads the `.ts` files directly.
+Audio I/O and UI behavior are verified by running the app in a browser.

@@ -1,0 +1,25 @@
+{
+  // Server and tests. Checked only, never emitted: Node runs both of these
+  // straight from .ts using its own type stripping. No DOM lib — the server
+  // never touches a document, and a test that wants DOM types is a test that
+  // should have been a browser check.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["server.ts", "test/**/*.ts"]
+}

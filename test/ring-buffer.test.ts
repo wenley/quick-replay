@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRingBuffer } from '../public/ring-buffer.js';
+import { createRingBuffer } from '../src/ring-buffer.ts';
 
 // Sequential integers as floats make ordering bugs obvious at a glance.
-function ramp(start, count) {
+function ramp(start: number, count: number): Float32Array {
   const arr = new Float32Array(count);
   for (let i = 0; i < count; i++) arr[i] = start + i;
   return arr;

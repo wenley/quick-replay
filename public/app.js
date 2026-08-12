@@ -6,13 +6,13 @@
 // logic lives here — only "how do I actually acquire a mic / start capture /
 // play a buffer" mechanics.
 
-import { createRingBuffer } from './ring-buffer.js';
+import { createRingBuffer } from './js/ring-buffer.js';
 import {
   STANDBY, RECORD, PLAYBACK,
   ACQUIRE_MIC, RELEASE_MIC, START_CAPTURE, STOP_CAPTURE, FLUSH,
   START_PLAYBACK, STOP_PLAYBACK,
   initialState, reduce,
-} from './transitions.js';
+} from './js/transitions.js';
 
 // --- config ------------------------------------------------------------
 

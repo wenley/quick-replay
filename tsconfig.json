@@ -1,0 +1,37 @@
+{
+  // Browser sources: src/*.ts -> public/js/*.js. Deliberately has NO `types`
+  // entry, so nothing under src/ can reach for a Node global by accident —
+  // see tsconfig.node.json for the server/test half.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+
+    "rootDir": "src",
+    "outDir": "public/js",
+    "sourceMap": true,
+
+    // Imports name the .ts file directly — one specifier form that Node (for
+    // `node --test` and `node server.ts`), tsc, and the editor all resolve
+    // identically. `rewriteRelativeImportExtensions` turns those into .js on
+    // emit, so the browser gets specifiers that point at real emitted files.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "verbatimModuleSyntax": true,
+
+    // The tests import these same modules through Node's native type
+    // stripping, which can only erase — it cannot generate code. This flag
+    // bans the TypeScript features that would need generating (enums,
+    // namespaces, constructor parameter properties) so they can't creep in.
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src/**/*.ts"]
+}

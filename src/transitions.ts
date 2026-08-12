@@ -15,12 +15,45 @@ export const FLUSH = 'flush';
 export const START_PLAYBACK = 'startPlayback';
 export const STOP_PLAYBACK = 'stopPlayback';
 
-function effect(type, extra) {
-  return extra ? { type, ...extra } : { type };
+export type Mode = typeof STANDBY | typeof RECORD | typeof PLAYBACK;
+
+// The two modes you can ask for by name. Playback is never entered by naming
+// it — only by asking for a duration — so it is absent here by construction
+// rather than by convention.
+export type NamedMode = typeof STANDBY | typeof RECORD;
+
+export type Effect =
+  | { type: typeof ACQUIRE_MIC }
+  | { type: typeof RELEASE_MIC }
+  | { type: typeof START_CAPTURE }
+  | { type: typeof STOP_CAPTURE }
+  | { type: typeof FLUSH }
+  | { type: typeof START_PLAYBACK; seconds: number }
+  | { type: typeof STOP_PLAYBACK };
+
+export type Event =
+  | { type: 'mode'; to: NamedMode }
+  | { type: 'duration'; seconds: number }
+  | { type: 'playbackEnded' }
+  | { type: 'back' }
+  | { type: 'escape' };
+
+export interface State {
+  mode: Mode;
+  previousMode: Mode;
 }
 
-/** @returns {{ mode: string, previousMode: string }} */
-export function initialState() {
+/** What the interpreter knows that the reducer cannot work out for itself. */
+export interface Context {
+  micHeld: boolean;
+}
+
+export interface Result {
+  state: State;
+  effects: Effect[];
+}
+
+export function initialState(): State {
   return { mode: STANDBY, previousMode: STANDBY };
 }
 
@@ -29,33 +62,37 @@ export function initialState() {
 // controls whether a `stopPlayback` needs to be emitted first - callers that
 // already emitted (or don't need) their own `stopPlayback` pass `false`.
 
-function standbyEntryEffects(fromPlayback) {
-  const effects = [];
-  if (fromPlayback) effects.push(effect(STOP_PLAYBACK));
-  effects.push(effect(STOP_CAPTURE), effect(FLUSH), effect(RELEASE_MIC));
+function standbyEntryEffects(fromPlayback: boolean): Effect[] {
+  const effects: Effect[] = [];
+  if (fromPlayback) effects.push({ type: STOP_PLAYBACK });
+  effects.push({ type: STOP_CAPTURE }, { type: FLUSH }, { type: RELEASE_MIC });
   return effects;
 }
 
-function recordEntryEffects(fromPlayback, context) {
-  const effects = [];
-  if (fromPlayback) effects.push(effect(STOP_PLAYBACK));
+function recordEntryEffects(fromPlayback: boolean, context: Context): Effect[] {
+  const effects: Effect[] = [];
+  if (fromPlayback) effects.push({ type: STOP_PLAYBACK });
   // The mic is only (re)acquired if we don't already hold it - this is what
   // keeps record -> playback -> record gapless.
-  if (!context.micHeld) effects.push(effect(ACQUIRE_MIC));
-  effects.push(effect(START_CAPTURE));
+  if (!context.micHeld) effects.push({ type: ACQUIRE_MIC });
+  effects.push({ type: START_CAPTURE });
   return effects;
 }
 
-function playbackEntryEffects(seconds) {
-  return [effect(STOP_CAPTURE), effect(FLUSH), effect(START_PLAYBACK, { seconds })];
+function playbackEntryEffects(seconds: number): Effect[] {
+  return [{ type: STOP_CAPTURE }, { type: FLUSH }, { type: START_PLAYBACK, seconds }];
+}
+
+// Entering whichever mode a playback should fall back to.
+function returnEntryEffects(target: Mode, context: Context): Effect[] {
+  return target === RECORD ? recordEntryEffects(false, context) : standbyEntryEffects(false);
 }
 
 // --- event handlers ----------------------------------------------------
 
-function handleMode(state, to, context) {
-  // Rule 8: naming the mode you're already in is a no-op. (This can never
-  // spuriously trigger from playback since `to` is only ever 'record' or
-  // 'standby' here - satisfying the "exception while in playback" clause.)
+function handleMode(state: State, to: NamedMode, context: Context): Result {
+  // Naming the mode you're already in is a no-op. `to` can never be
+  // 'playback', so this can't spuriously fire while a replay is running.
   if (state.mode === to) {
     return { state: { ...state }, effects: [] };
   }
@@ -69,47 +106,44 @@ function handleMode(state, to, context) {
     };
   }
 
-  // to === STANDBY
   return {
     state: { mode: STANDBY, previousMode: state.previousMode },
     effects: standbyEntryEffects(fromPlayback),
   };
 }
 
-function handleDuration(state, seconds, context) {
+function handleDuration(state: State, seconds: number): Result {
   if (state.mode === PLAYBACK) {
-    // Rule 4: re-trigger. previousMode must NOT change here - it still
-    // points at whatever mode we were in before the *original* entry into
-    // playback.
+    // Re-trigger. previousMode must NOT change here - it still points at
+    // whatever mode we were in before the *original* entry into playback.
     return {
       state: { mode: PLAYBACK, previousMode: state.previousMode },
-      effects: [effect(STOP_PLAYBACK), effect(START_PLAYBACK, { seconds })],
+      effects: [{ type: STOP_PLAYBACK }, { type: START_PLAYBACK, seconds }],
     };
   }
 
-  // Rule 3: fresh entry into playback - capture the current mode as the one
-  // to return to, but only at this moment of entry.
+  // Fresh entry into playback - capture the current mode as the one to return
+  // to, but only at this moment of entry.
   return {
     state: { mode: PLAYBACK, previousMode: state.mode },
     effects: playbackEntryEffects(seconds),
   };
 }
 
-function handlePlaybackEnded(state, context) {
+function handlePlaybackEnded(state: State, context: Context): Result {
   if (state.mode !== PLAYBACK) {
     // Arrived late after a supersede (e.g. escape/back already moved us on).
     return { state: { ...state }, effects: [] };
   }
 
   const target = state.previousMode;
-  const effects = target === RECORD
-    ? recordEntryEffects(false, context)
-    : standbyEntryEffects(false);
-
-  return { state: { mode: target, previousMode: state.previousMode }, effects };
+  return {
+    state: { mode: target, previousMode: state.previousMode },
+    effects: returnEntryEffects(target, context),
+  };
 }
 
-function handleBack(state, context) {
+function handleBack(state: State, context: Context): Result {
   if (state.mode !== PLAYBACK) {
     // Outside playback, Space is a Record/Standby toggle — the single key
     // you can hit to start or stop capturing without aiming.
@@ -117,17 +151,13 @@ function handleBack(state, context) {
   }
 
   const target = state.previousMode;
-  const entryEffects = target === RECORD
-    ? recordEntryEffects(false, context)
-    : standbyEntryEffects(false);
-
   return {
     state: { mode: target, previousMode: state.previousMode },
-    effects: [effect(STOP_PLAYBACK), ...entryEffects],
+    effects: [{ type: STOP_PLAYBACK }, ...returnEntryEffects(target, context)],
   };
 }
 
-function handleEscape(state, context) {
+function handleEscape(state: State, context: Context): Result {
   if (state.mode === PLAYBACK) {
     return {
       state: { mode: STANDBY, previousMode: state.previousMode },
@@ -140,18 +170,12 @@ function handleEscape(state, context) {
   return handleMode(state, STANDBY, context);
 }
 
-/**
- * @param {{ mode: string, previousMode: string }} state
- * @param {object} event
- * @param {{ micHeld: boolean }} context
- * @returns {{ state: { mode: string, previousMode: string }, effects: object[] }}
- */
-export function reduce(state, event, context) {
+export function reduce(state: State, event: Event, context: Context): Result {
   switch (event.type) {
     case 'mode':
       return handleMode(state, event.to, context);
     case 'duration':
-      return handleDuration(state, event.seconds, context);
+      return handleDuration(state, event.seconds);
     case 'playbackEnded':
       return handlePlaybackEnded(state, context);
     case 'back':

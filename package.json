@@ -1,1 +1,16 @@
-{"name":"quick-replay","private":true,"type":"module"}
+{
+  "name": "quick-replay",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "start": "npm run build && node server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
