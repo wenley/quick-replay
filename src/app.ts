@@ -72,12 +72,6 @@ function getTimelineModel(): TimelineModel | null {
   };
 }
 
-function toggleLooping(): void {
-  playback?.setLooping(!(playback?.looping ?? false));
-  render();
-  flashMessage(playback?.looping ? 'looping on' : 'looping off');
-}
-
 // --- effect interpreter ------------------------------------------------
 
 async function runEffect(eff: Effect): Promise<void> {
@@ -244,20 +238,8 @@ function render(): void {
     // Slowdown is otherwise invisible in this line, so make it explicit at a
     // glance whenever a replay is actually running below full speed.
     const speedSuffix = speedControl.value < 1 ? ` at ${formatSpeed(speedControl.value)} (pitch preserved)` : '';
-    if (playback?.looping) {
-      el.playbackStatusText.textContent = `looping last ${label}${speedSuffix} (L to stop)`;
-    } else {
-      const target = modeLabelText(reducerState.previousMode);
-      el.playbackStatusText.textContent = `playing last ${label}${speedSuffix} → returning to ${target}`;
-    }
-  }
-
-  // Looping toggle.
-  if (el.loopToggle) {
-    const looping = playback?.looping ?? false;
-    el.loopToggle.textContent = looping ? 'On' : 'Off';
-    el.loopToggle.classList.toggle('on', looping);
-    el.loopToggle.setAttribute('aria-pressed', String(looping));
+    const target = modeLabelText(reducerState.previousMode);
+    el.playbackStatusText.textContent = `looping last ${label}${speedSuffix} → Space to return to ${target}`;
   }
 
   // Speed readout: call out visually whenever it's below full speed, not
@@ -329,11 +311,6 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
     dispatch({ type: 'mode', to: STANDBY });
     return;
   }
-  if (lower === 'l') {
-    event.preventDefault();
-    toggleLooping();
-    return;
-  }
   if (lower === 'x') {
     event.preventDefault();
     speedControl.cycle();
@@ -350,13 +327,6 @@ for (const d of DURATIONS) {
     btn.addEventListener('mouseenter', () => timeline.highlightDurationSpan(getTimelineModel(), d.seconds));
     btn.addEventListener('mouseleave', () => timeline.hideHighlight());
   }
-}
-
-if (el.loopToggle) {
-  el.loopToggle.addEventListener('click', () => {
-    if (!armed) return;
-    toggleLooping();
-  });
 }
 
 // --- gain control ------------------------------------------------------------

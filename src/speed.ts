@@ -4,9 +4,8 @@
 // because AudioBufferSourceNode.playbackRate resamples — it would drop the
 // pitch along with the speed, which is exactly what pitch-preserving means
 // we must not do. Speed never exceeds 1.0; this app never speeds audio up.
-// Like looping (and unlike gain), it doesn't need audioCtx to load, so it's
-// read from storage eagerly at construction rather than deferred to
-// arm-time.
+// Unlike gain, it doesn't need audioCtx to load, so it's read from storage
+// eagerly at construction rather than deferred to arm-time.
 
 import { el, flashMessage } from './dom.ts';
 import { formatSpeed } from './format.ts';

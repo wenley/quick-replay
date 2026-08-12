@@ -51,7 +51,6 @@ on your network.
 | `q` | Replay the current take from its start |
 | `r` | Switch to Record |
 | `s` | Switch to Standby |
-| `l` | Toggle looping on/off |
 | `x` | Cycle playback speed: 1.0x → 0.75x → 0.5x → 0.25x → 1.0x |
 | `Space` | Toggle Record/Standby — or, during playback, back to the previous mode |
 | `Esc` | Back to Standby |
@@ -134,28 +133,10 @@ its wall-clock start time in a tooltip if you need the real answer.
 
 - **Standby** — not recording, mic released (indicator goes dark).
 - **Record** — actively capturing into the ring buffer.
-- **Playback** — replaying a fixed lookback window, then automatically
-  returning to whichever mode (Record or Standby) it was launched from
-  (unless looping is on — see below).
-
-## Looping
-
-Press `l` (or click the **Looping** toggle) to arm looping mode. It's a
-global on/off switch, not tied to any one replay, and its setting persists
-across reloads.
-
-- **Off (default):** playback runs once, then returns to whichever mode
-  (Record or Standby) it was launched from.
-- **On:** when a clip finishes, it immediately replays the same clip again —
-  same audio, same duration — for as long as looping stays on. Playback mode
-  is held indefinitely instead of returning.
-
-Because looping is global, toggling it takes effect at the next natural
-boundary rather than mid-clip: flipping it on while a replay is already
-running makes that replay loop once it reaches the end; flipping it off
-during a loop lets the current pass finish before returning as normal — it
-never cuts audio short. The playback status line reads "looping last …"
-while a loop is running.
+- **Playback** — replaying a fixed lookback window on loop, until you leave
+  it with `Space` (back to whichever mode it was launched from) or `Esc`
+  (to Standby). The playback status line reads "looping last …" while it
+  runs.
 
 ## Things worth knowing
 

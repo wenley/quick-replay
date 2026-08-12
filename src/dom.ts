@@ -42,7 +42,6 @@ export interface Elements {
   gainDb: HTMLElement | null;
   gainMult: HTMLElement | null;
   gainClipWarning: HTMLElement | null;
-  loopToggle: HTMLButtonElement | null;
   speedSlider: HTMLInputElement | null;
   speedValue: HTMLElement | null;
 }
@@ -71,7 +70,6 @@ export const el: Elements = {
   gainDb: byId('gain-db'),
   gainMult: byId('gain-mult'),
   gainClipWarning: byId('gain-clip-warning'),
-  loopToggle: buttonById('loop-toggle'),
   speedSlider: inputById('speed-slider'),
   speedValue: byId('speed-value'),
 };

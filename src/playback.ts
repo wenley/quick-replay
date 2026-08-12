@@ -1,9 +1,9 @@
 // The playback engine: replaying a stretch of the ring buffer, either at
 // full speed (zero-latency AudioBufferSourceNode) or slowed down with pitch
 // preserved (HTMLAudioElement, the only thing that gets us native
-// pitch-preserving time-stretch). Owns the generation-guarded onended/loop
-// accounting that makes interrupting, re-triggering, and toggling loop
-// mid-playback all behave correctly.
+// pitch-preserving time-stretch). Owns the generation-guarded onended
+// accounting that makes interrupting and re-triggering behave correctly, and
+// loops every playback indefinitely until it's superseded.
 
 import type { RingBuffer } from './ring-buffer.ts';
 import type { PlaybackSpan } from './timeline.ts';
@@ -16,7 +16,7 @@ export interface PlaybackDeps {
   /** The node every source routes through. Null falls back to destination. */
   getOutputNode: () => GainNode | null;
   getSpeed: () => number;
-  /** A playback finished naturally — not superseded, not looping. */
+  /** There was nothing to play (empty ring buffer) — not superseded. */
   onEnded: () => void;
   /** Peak of the material about to play, for the clipping warning. */
   onMaterialPeak: (peak: number) => void;
@@ -33,27 +33,12 @@ export interface Playback {
   readonly span: PlaybackSpan;
   readonly lastSeconds: number;
   readonly lastLabel: string | null;
-  readonly looping: boolean;
-  setLooping(value: boolean): void;
 }
 
-// Looping playback. Global toggle, not per-playback — it can be flipped at
-// any time, including mid-playback, and is read fresh at the moment each
-// pass ends (see playBuffer's onended). It intentionally does not need
-// audioCtx to load, unlike gain, so it's read from storage eagerly here
-// rather than deferred to arm-time.
-const LOOP_STORAGE_KEY = 'quick-replay:looping';
 // Floor on the gap between passes. Without it, a pathologically short clip
 // (e.g. a 1-frame take) would have onended fire again almost immediately,
 // spinning the event loop in a tight restart cycle.
 const MIN_LOOP_PASS_SECONDS = 0.1;
-
-function loadStoredLooping(): boolean {
-  try {
-    return localStorage.getItem(LOOP_STORAGE_KEY) === '1';
-  } catch { /* private mode / storage disabled — fall through to default */ }
-  return false;
-}
 
 // Legacy aliases some browsers used before `preservesPitch` was
 // standardized. Not part of the DOM lib's HTMLMediaElement typings.
@@ -72,8 +57,6 @@ export function createPlayback(deps: PlaybackDeps): Playback {
   let playbackSpanStartAbs = 0;
   let playbackSpanEndAbs = 0;
   let progressRaf: number | null = null;
-
-  let looping = loadStoredLooping();
 
   // The media-element playback path (speed < 1.0 only). Created lazily, once,
   // on first use — createMediaElementSource() throws if called twice on the
@@ -185,17 +168,17 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     playBuffer(buffer, myPlaybackGen);
   }
 
-  // Plays one pass of `buffer` through the gain control's node. Used both for the
-  // initial playback and for every looping restart — the restart path reuses
-  // the exact same AudioBuffer rather than re-reading the ring buffer, so a
-  // looped clip is guaranteed to be the same audio on every pass.
+  // Plays one pass of `buffer` through the gain control's node, then
+  // schedules another pass — playback always loops until superseded. Used
+  // both for the initial playback and for every restart — the restart path
+  // reuses the exact same AudioBuffer rather than re-reading the ring
+  // buffer, so a looped clip is guaranteed to be the same audio on every
+  // pass.
   //
   // A fresh AudioBufferSourceNode is created per pass (never
   // `source.loop = true`): that keeps every pass going through the same
-  // onended -> generation-guard -> dispatch accounting as a one-shot playback,
-  // which is what makes "finish the current pass, then stop" possible when
-  // looping is toggled off mid-playback, and what lets the progress bar reset
-  // per pass instead of pinning at 100%.
+  // onended -> generation-guard -> restart accounting, and lets the progress
+  // bar reset per pass instead of pinning at 100%.
   function playBuffer(buffer: AudioBuffer, myPlaybackGen: number): void {
     const ctx = deps.audioCtx;
 
@@ -209,31 +192,15 @@ export function createPlayback(deps: PlaybackDeps): Playback {
       if (myPlaybackGen !== playbackGeneration) return;
       currentPlaybackSource = null;
 
-      // Read `looping` fresh here, not at playback start — flipping it mid-
-      // playback must take effect at the next pass boundary, in either
-      // direction.
-      if (looping) {
-        // Restart the SAME buffer for another pass, without dispatching
-        // `playbackEnded` — that would leave Playback mode, which looping
-        // must not do. Floor the gap so a very short clip can't restart faster
-        // than MIN_LOOP_PASS_SECONDS.
-        const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
-        setTimeout(() => {
-          if (myPlaybackGen !== playbackGeneration) return;
-          if (!looping) {
-            // Toggled off during the gap: finish as a normal (non-looping)
-            // ending rather than starting another pass.
-            stopProgressLoop();
-            deps.onEnded();
-            return;
-          }
-          playBuffer(buffer, myPlaybackGen);
-        }, delayMs);
-        return;
-      }
-
-      stopProgressLoop();
-      deps.onEnded();
+      // Restart the SAME buffer for another pass, without dispatching
+      // `playbackEnded` — that would leave Playback mode, which playback
+      // never does on its own now. Floor the gap so a very short clip can't
+      // restart faster than MIN_LOOP_PASS_SECONDS.
+      const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
+      setTimeout(() => {
+        if (myPlaybackGen !== playbackGeneration) return;
+        playBuffer(buffer, myPlaybackGen);
+      }, delayMs);
     };
 
     currentPlaybackSource = source;
@@ -269,10 +236,10 @@ export function createPlayback(deps: PlaybackDeps): Playback {
 
   // Plays one pass of `audioEl` (already loaded with the clip) at the current
   // `speed`. Mirrors playBuffer's structure and contract as closely as
-  // possible: same generation guard, same "read `looping` fresh at the
-  // boundary" restart, same progress-loop bookkeeping — just driving an
-  // HTMLMediaElement instead of an AudioBufferSourceNode, since that's the
-  // only thing that gets us native pitch-preserving time-stretch.
+  // possible: same generation guard, same always-restart-at-the-boundary
+  // loop, same progress-loop bookkeeping — just driving an HTMLMediaElement
+  // instead of an AudioBufferSourceNode, since that's the only thing that
+  // gets us native pitch-preserving time-stretch.
   function playMediaPass(audioEl: HTMLAudioElement, clipDurationSeconds: number, myPlaybackGen: number): void {
     const ctx = deps.audioCtx;
 
@@ -289,22 +256,11 @@ export function createPlayback(deps: PlaybackDeps): Playback {
       if (myPlaybackGen !== playbackGeneration) return;
       currentPlaybackSource = null;
 
-      if (looping) {
-        const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
-        setTimeout(() => {
-          if (myPlaybackGen !== playbackGeneration) return;
-          if (!looping) {
-            stopProgressLoop();
-            deps.onEnded();
-            return;
-          }
-          playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen);
-        }, delayMs);
-        return;
-      }
-
-      stopProgressLoop();
-      deps.onEnded();
+      const delayMs = Math.max(0, MIN_LOOP_PASS_SECONDS - playbackDurationSeconds) * 1000;
+      setTimeout(() => {
+        if (myPlaybackGen !== playbackGeneration) return;
+        playMediaPass(audioEl, clipDurationSeconds, myPlaybackGen);
+      }, delayMs);
     };
 
     currentPlaybackSource = audioEl;
@@ -327,11 +283,6 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     // Idempotent restart, same reasoning as playBuffer's.
     stopProgressLoop();
     startProgressLoop();
-  }
-
-  function setLooping(value: boolean): void {
-    looping = value;
-    try { localStorage.setItem(LOOP_STORAGE_KEY, looping ? '1' : '0'); } catch { /* ignore */ }
   }
 
   function stopPlayback(): void {
@@ -386,9 +337,5 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     get lastLabel(): string | null {
       return lastPlaybackLabel;
     },
-    get looping(): boolean {
-      return looping;
-    },
-    setLooping,
   };
 }
