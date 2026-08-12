@@ -15,39 +15,9 @@ import {
   type Mode, type Effect, type Event, type State,
 } from './transitions.ts';
 import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts';
-
-// --- config ------------------------------------------------------------
-
-interface DurationOption {
-  key: string;
-  seconds: number;
-  label: string;
-}
-
-const DURATIONS: DurationOption[] = [
-  { key: '1', seconds: 5, label: '5s' },
-  { key: '2', seconds: 10, label: '10s' },
-  { key: '3', seconds: 30, label: '30s' },
-  { key: '4', seconds: 60, label: '1m' },
-  { key: '5', seconds: 120, label: '2m' },
-  { key: '6', seconds: 300, label: '5m' },
-];
-
-function readMaxSeconds(): number {
-  const raw = document.body.dataset.maxLookbackSeconds;
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) {
-    console.warn(
-      `quick-replay: __MAX_LOOKBACK_SECONDS__ placeholder was not substituted ` +
-      `(got "${raw}"). This page was probably opened directly instead of via ` +
-      `the server. Falling back to 300s.`
-    );
-    return 300;
-  }
-  return value;
-}
-
-const MAX_SECONDS = readMaxSeconds();
+import { DURATIONS, MAX_SECONDS, MIC_CONSTRAINTS, type Duration } from './config.ts';
+import { formatMinSec, formatSpeed } from './format.ts';
+import { encodeWavBlob } from './wav.ts';
 
 // --- DOM refs ------------------------------------------------------------
 
@@ -209,13 +179,6 @@ let mediaClipSeconds = 0; // clip length in clip-time, for re-basing on a live r
 
 // --- small utils ---------------------------------------------------------
 
-function formatMinSec(totalSeconds: number): string {
-  const safe = Math.max(0, totalSeconds);
-  const m = Math.floor(safe / 60);
-  const s = Math.floor(safe % 60);
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
 let flashTimer: number | undefined;
 function flashMessage(text: string): void {
   if (!el.flashMessage) return;
@@ -315,15 +278,6 @@ function renderPlaybackProgress(ratio: number): void {
 }
 
 // --- mic lifecycle ---------------------------------------------------------
-
-const MIC_CONSTRAINTS: MediaStreamConstraints = {
-  audio: {
-    echoCancellation: false,
-    autoGainControl: false,
-    noiseSuppression: false,
-    channelCount: 1,
-  },
-};
 
 // Whether the app currently wants to be holding a mic. Playback deliberately
 // holds the stream when it came from Record, so returning is gapless.
@@ -501,7 +455,7 @@ interface TimelineModel {
   oldestAbs: number;
   takes: Take[];
   activeTake: Take | null;
-  durations: DurationOption[];
+  durations: Duration[];
 }
 
 // Snapshot the renderer draws from. All positions are absolute frames; the
@@ -573,45 +527,6 @@ function renderGain(): void {
     const willClip = lastPlaybackPeak > 0 && lastPlaybackPeak * linear > 1;
     el.gainClipWarning.classList.toggle('visible', willClip);
   }
-}
-
-// --- WAV encoding (for the media-element slowdown path) --------------------
-
-// Encodes mono Float32 samples as a 16-bit PCM WAV Blob. This exists only so
-// the clip can be handed to an <audio> element — HTMLMediaElement is what
-// gives us native pitch-preserving time-stretch via `preservesPitch`, and it
-// needs a real media resource, not a raw sample array.
-function encodeWavBlob(samples: Float32Array, sampleRate: number): Blob {
-  const bytesPerSample = 2;
-  const dataSize = samples.length * bytesPerSample;
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  function writeString(offset: number, str: string): void {
-    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-  }
-
-  writeString(0, 'RIFF');
-  view.setUint32(4, 36 + dataSize, true);
-  writeString(8, 'WAVE');
-  writeString(12, 'fmt ');
-  view.setUint32(16, 16, true); // fmt chunk size
-  view.setUint16(20, 1, true); // format = PCM
-  view.setUint16(22, 1, true); // channels = mono
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * bytesPerSample, true); // byte rate
-  view.setUint16(32, bytesPerSample, true); // block align
-  view.setUint16(34, 16, true); // bits per sample
-  writeString(36, 'data');
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let i = 0; i < samples.length; i++, offset += 2) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, Math.round(clamped * (clamped < 0 ? 32768 : 32767)), true);
-  }
-
-  return new Blob([buffer], { type: 'audio/wav' });
 }
 
 // Creates the reused <audio> element and its MediaElementAudioSourceNode
@@ -877,10 +792,6 @@ function stopPlayback(): void {
   currentPlaybackSource = null;
   stopProgressLoop();
   renderPlaybackProgress(0);
-}
-
-function formatSpeed(value: number): string {
-  return `${value.toFixed(2)}x`;
 }
 
 function renderSpeed(): void {
