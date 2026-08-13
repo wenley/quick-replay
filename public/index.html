@@ -552,14 +552,40 @@
     line-height: 1.4;
   }
 
+  /* Grouped key/action columns. Each group is its own two-column grid so the
+     keys line up within a group; the groups themselves flow side by side and
+     collapse to one column when there isn't room for two. */
   #key-legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 22px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+    gap: 20px 36px;
     font-size: 0.85rem;
     color: var(--text-dim);
     border-top: 1px solid var(--panel-border);
     padding-top: 16px;
+  }
+
+  #key-legend .section-label {
+    font-size: 0.7rem;
+    margin-bottom: 10px;
+  }
+
+  #key-legend dl {
+    margin: 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 7px 14px;
+    align-items: baseline;
+  }
+
+  #key-legend dt {
+    white-space: nowrap;
+    justify-self: start;
+  }
+
+  #key-legend dd {
+    margin: 0;
+    line-height: 1.35;
   }
 
   #key-legend kbd {
@@ -572,8 +598,9 @@
     border-radius: 5px;
     font-family: inherit;
     color: var(--text);
-    margin-right: 4px;
   }
+
+  #key-legend dt kbd + kbd { margin-left: 4px; }
 
   #mic-note {
     font-size: 0.78rem;
@@ -745,14 +772,43 @@
     </div>
 
     <div id="key-legend">
-      <div><kbd>1</kbd>–<kbd>6</kbd> replay duration</div>
-      <div><kbd>r</kbd> Record</div>
-      <div><kbd>s</kbd> Standby</div>
-      <div><kbd>x</kbd> Cycle playback speed</div>
-      <div><kbd>Space</kbd> back to previous mode</div>
-      <div><kbd>Esc</kbd> back to Standby</div>
-      <div><kbd>↑</kbd><kbd>↓</kbd> volume &plusmn;1 dB</div>
-      <div><kbd>0</kbd> reset volume</div>
+      <section>
+        <div class="section-label">Replay</div>
+        <dl>
+          <dt><kbd>1</kbd>–<kbd>6</kbd></dt>
+          <dd>Replay last 5s / 10s / 30s / 1m / 2m / 5m</dd>
+          <dt><kbd>q</kbd></dt>
+          <dd>Replay the current take from its start</dd>
+          <dt><kbd>1</kbd>–<kbd>6</kbd> <kbd>q</kbd></dt>
+          <dd>Press the lit key again to leave playback</dd>
+        </dl>
+      </section>
+
+      <section>
+        <div class="section-label">Modes</div>
+        <dl>
+          <dt><kbd>r</kbd></dt>
+          <dd>Record</dd>
+          <dt><kbd>s</kbd></dt>
+          <dd>Standby</dd>
+          <dt><kbd>Space</kbd></dt>
+          <dd>Leave playback &mdash; or toggle Record / Standby</dd>
+          <dt><kbd>Esc</kbd></dt>
+          <dd>Back to Standby</dd>
+        </dl>
+      </section>
+
+      <section>
+        <div class="section-label">While playing</div>
+        <dl>
+          <dt><kbd>x</kbd></dt>
+          <dd>Cycle speed 1.0&times; &rarr; 0.75&times; &rarr; 0.5&times; &rarr; 0.25&times;</dd>
+          <dt><kbd>&uarr;</kbd> <kbd>&darr;</kbd></dt>
+          <dd>Volume &plusmn;1 dB</dd>
+          <dt><kbd>0</kbd></dt>
+          <dd>Reset volume to 0 dB</dd>
+        </dl>
+      </section>
     </div>
 
     <div id="mic-note">
