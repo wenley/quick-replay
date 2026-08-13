@@ -359,10 +359,13 @@
   .duration-btn:active { transform: scale(0.97); }
 
   /* The duration currently being replayed, so the key you pressed and the
-     span lit up on the timeline read as the same thing. */
+     span lit up on the timeline read as the same thing. The ring makes the
+     button read unmistakably as "active, press again to exit" — pressing
+     the same key/button a second time stops the replay. */
   .duration-btn.playing {
     border-color: var(--playback);
     background: #0d1420;
+    box-shadow: 0 0 0 1px var(--playback), 0 0 12px -2px var(--playback);
   }
   .duration-btn.playing .duration-label { color: var(--playback); }
   .duration-btn.playing .duration-key {

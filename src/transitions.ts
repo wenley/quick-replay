@@ -33,7 +33,7 @@ export type Effect =
 
 export type Event =
   | { type: 'mode'; to: NamedMode }
-  | { type: 'duration'; seconds: number }
+  | { type: 'duration'; seconds: number; source: string | null }
   | { type: 'playbackEnded' }
   | { type: 'back' }
   | { type: 'escape' };
@@ -41,6 +41,9 @@ export type Event =
 export interface State {
   mode: Mode;
   previousMode: Mode;
+  /** Which trigger launched the running playback — a duration key ('1'-'6'),
+   *  'q', or null when nothing is playing or the trigger is not re-pressable. */
+  playbackSource: string | null;
 }
 
 /** What the interpreter knows that the reducer cannot work out for itself. */
@@ -54,7 +57,7 @@ export interface Result {
 }
 
 export function initialState(): State {
-  return { mode: STANDBY, previousMode: STANDBY };
+  return { mode: STANDBY, previousMode: STANDBY, playbackSource: null };
 }
 
 // --- entry-effect builders -------------------------------------------------
@@ -101,23 +104,33 @@ function handleMode(state: State, to: NamedMode, context: Context): Result {
 
   if (to === RECORD) {
     return {
-      state: { mode: RECORD, previousMode: state.previousMode },
+      state: { mode: RECORD, previousMode: state.previousMode, playbackSource: null },
       effects: recordEntryEffects(fromPlayback, context),
     };
   }
 
   return {
-    state: { mode: STANDBY, previousMode: state.previousMode },
+    state: { mode: STANDBY, previousMode: state.previousMode, playbackSource: null },
     effects: standbyEntryEffects(fromPlayback),
   };
 }
 
-function handleDuration(state: State, seconds: number): Result {
+function handleDuration(state: State, seconds: number, source: string | null, context: Context): Result {
+  if (state.mode === PLAYBACK && source !== null && state.playbackSource === source) {
+    // Pressing (or clicking) the same trigger that launched the running
+    // playback exits it, exactly like a `back` event.
+    const target = state.previousMode;
+    return {
+      state: { mode: target, previousMode: state.previousMode, playbackSource: null },
+      effects: [{ type: STOP_PLAYBACK }, ...returnEntryEffects(target, context)],
+    };
+  }
+
   if (state.mode === PLAYBACK) {
     // Re-trigger. previousMode must NOT change here - it still points at
     // whatever mode we were in before the *original* entry into playback.
     return {
-      state: { mode: PLAYBACK, previousMode: state.previousMode },
+      state: { mode: PLAYBACK, previousMode: state.previousMode, playbackSource: source },
       effects: [{ type: STOP_PLAYBACK }, { type: START_PLAYBACK, seconds }],
     };
   }
@@ -125,7 +138,7 @@ function handleDuration(state: State, seconds: number): Result {
   // Fresh entry into playback - capture the current mode as the one to return
   // to, but only at this moment of entry.
   return {
-    state: { mode: PLAYBACK, previousMode: state.mode },
+    state: { mode: PLAYBACK, previousMode: state.mode, playbackSource: source },
     effects: playbackEntryEffects(seconds),
   };
 }
@@ -138,7 +151,7 @@ function handlePlaybackEnded(state: State, context: Context): Result {
 
   const target = state.previousMode;
   return {
-    state: { mode: target, previousMode: state.previousMode },
+    state: { mode: target, previousMode: state.previousMode, playbackSource: null },
     effects: returnEntryEffects(target, context),
   };
 }
@@ -152,7 +165,7 @@ function handleBack(state: State, context: Context): Result {
 
   const target = state.previousMode;
   return {
-    state: { mode: target, previousMode: state.previousMode },
+    state: { mode: target, previousMode: state.previousMode, playbackSource: null },
     effects: [{ type: STOP_PLAYBACK }, ...returnEntryEffects(target, context)],
   };
 }
@@ -160,7 +173,7 @@ function handleBack(state: State, context: Context): Result {
 function handleEscape(state: State, context: Context): Result {
   if (state.mode === PLAYBACK) {
     return {
-      state: { mode: STANDBY, previousMode: state.previousMode },
+      state: { mode: STANDBY, previousMode: state.previousMode, playbackSource: null },
       effects: standbyEntryEffects(true),
     };
   }
@@ -175,7 +188,7 @@ export function reduce(state: State, event: Event, context: Context): Result {
     case 'mode':
       return handleMode(state, event.to, context);
     case 'duration':
-      return handleDuration(state, event.seconds);
+      return handleDuration(state, event.seconds, event.source, context);
     case 'playbackEnded':
       return handlePlaybackEnded(state, context);
     case 'back':

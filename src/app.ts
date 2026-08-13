@@ -125,7 +125,7 @@ async function dispatch(event: Event): Promise<void> {
       // already optimistically moved reducerState toward `record`; roll
       // back to standby rather than strand the UI in a mode with no mic.
       if (eff.type === ACQUIRE_MIC) {
-        reducerState = { mode: STANDBY, previousMode: reducerState.previousMode };
+        reducerState = { mode: STANDBY, previousMode: reducerState.previousMode, playbackSource: null };
       }
       break;
     }
@@ -134,13 +134,13 @@ async function dispatch(event: Event): Promise<void> {
   render();
 }
 
-function dispatchDuration(seconds: number, label: string | null = null): void {
+function dispatchDuration(seconds: number, label: string | null = null, source: string | null = null): void {
   if (!ringBuffer || ringBuffer.available === 0) {
     flashMessage('nothing recorded yet');
     return;
   }
   pendingPlaybackLabel = label;
-  dispatch({ type: 'duration', seconds });
+  dispatch({ type: 'duration', seconds, source });
 }
 
 // `q` — replay the current take from its start, or from as far back as the
@@ -155,7 +155,7 @@ function replayCurrentTake(): void {
   const label = takeWindow.trimmed
     ? `take (${formatMinSec(seconds)}, trimmed to buffer)`
     : `take (${formatMinSec(seconds)})`;
-  dispatchDuration(seconds, label);
+  dispatchDuration(seconds, label, 'q');
 }
 
 // --- rendering -------------------------------------------------------------
@@ -203,12 +203,14 @@ function render(): void {
   // Light up the key that launched the running replay, so the button, the
   // key you pressed, and the lit span on the timeline all read as one thing.
   // `q` matches no button, which is correct — it has no fixed duration.
+  // Compared against the exact trigger that's live (playbackSource) rather
+  // than inferred from the current seconds/label, since a re-trigger with
+  // the same seconds but a different source (or vice versa) must not
+  // mislight a button.
   for (const d of DURATIONS) {
     const btn = document.getElementById(`duration-btn-${d.seconds}`);
     if (!btn) continue;
-    const isPlaying = mode === PLAYBACK
-      && !playback?.lastLabel
-      && d.seconds === playback?.lastSeconds;
+    const isPlaying = reducerState.playbackSource === d.key;
     btn.classList.toggle('playing', isPlaying);
   }
 
@@ -262,7 +264,7 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
     const dur = DURATIONS.find((d) => d.key === key);
     if (dur) {
       event.preventDefault();
-      dispatchDuration(dur.seconds);
+      dispatchDuration(dur.seconds, null, dur.key);
     }
     return;
   }
@@ -323,7 +325,7 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
 for (const d of DURATIONS) {
   const btn = document.getElementById(`duration-btn-${d.seconds}`);
   if (btn) {
-    btn.addEventListener('click', () => dispatchDuration(d.seconds));
+    btn.addEventListener('click', () => dispatchDuration(d.seconds, null, d.key));
     btn.addEventListener('mouseenter', () => timeline.highlightDurationSpan(getTimelineModel(), d.seconds));
     btn.addEventListener('mouseleave', () => timeline.hideHighlight());
   }
@@ -352,7 +354,7 @@ const speedControl = createSpeedControl(() => {
   // re-trigger path a repeated duration keypress takes (handleDuration's
   // PLAYBACK branch), so it goes through the supersede guard, not around it.
   pendingPlaybackLabel = playback.lastLabel;
-  dispatch({ type: 'duration', seconds: playback.lastSeconds });
+  dispatch({ type: 'duration', seconds: playback.lastSeconds, source: null });
 });
 
 // --- focus warning -------------------------------------------------------

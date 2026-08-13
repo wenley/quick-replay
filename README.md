@@ -59,6 +59,12 @@ on your network.
 
 The browser tab must be focused for keys to register.
 
+Playback loops, so the key that started it doubles as the way out: while a
+replay is running its button is lit, and pressing that same key again — or
+clicking the lit button — leaves playback exactly as `Space` would. A
+*different* duration key re-triggers instead, switching the replay to that
+length without leaving playback.
+
 ## Playback volume
 
 A slider sets playback gain from **−30 dB (muted) to +18 dB (~8×)**, defaulting
@@ -139,9 +145,9 @@ its wall-clock start time in a tooltip if you need the real answer.
 - **Standby** — not recording, mic released (indicator goes dark).
 - **Record** — actively capturing into the ring buffer.
 - **Playback** — replaying a fixed lookback window on loop, until you leave
-  it with `Space` (back to whichever mode it was launched from) or `Esc`
-  (to Standby). The playback status line reads "looping last …" while it
-  runs.
+  it with `Space` (back to whichever mode it was launched from), `Esc` (to
+  Standby), or by pressing the lit duration key again (same as `Space`). The
+  playback status line reads "looping last …" while it runs.
 
 ## Things worth knowing
 
