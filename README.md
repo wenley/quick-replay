@@ -8,8 +8,8 @@ time-to-replay is close to zero.
 
 ## Requirements
 
-- Node 24+ (earlier versions can't run the `.ts` sources directly, which the
-  tests rely on)
+- Node 24+. Node runs the `.ts` sources directly — the server and the tests
+  are never compiled — and 24 is what this is developed and tested against.
 - **Chrome.** It has the most reliable `AudioWorklet` support and remembers
   mic permission per-origin, so you're only prompted once. Safari's behavior
   here is flakier — stick with Chrome.
@@ -34,6 +34,16 @@ Flags:
 |------|---------|---------|
 | `--max <seconds>` | `300` | Size of the rolling buffer, in seconds (max `1800`) |
 | `--port <n>` | `8080` | Port to listen on |
+
+These go to the server, not to npm, so through `npm start` they need a `--`
+separator:
+
+```
+npm start -- --max 60 --port 9000
+```
+
+Without it npm eats the flag and you get a confusing `Unknown flag: 9000`.
+Once built, `node server.ts --max 60 --port 9000` takes them directly.
 
 The server binds to `127.0.0.1` only — it's not reachable from other devices
 on your network.
