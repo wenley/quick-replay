@@ -433,7 +433,16 @@ if (el.armButton) {
       probeStream.getTracks().forEach((track) => track.stop());
 
       await audioCtx.resume();
-      await audioCtx.audioWorklet.addModule('./recorder-worklet.js');
+      // Resolved against THIS module's URL, deliberately. addModule() differs
+      // from a normal import: a bare relative specifier is resolved against
+      // the DOCUMENT's base URL, not the calling module's. The document is
+      // served at /, so './recorder-worklet.js' would ask for
+      // /recorder-worklet.js — a 404, which addModule reports as an
+      // AbortError, from a stack that says nothing about a missing file.
+      // import.meta.url pins it to the worklet sitting next to this file.
+      await audioCtx.audioWorklet.addModule(
+        new URL('./recorder-worklet.js', import.meta.url).href,
+      );
 
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
