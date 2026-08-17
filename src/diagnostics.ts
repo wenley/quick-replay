@@ -132,6 +132,8 @@ export interface DiagnosticOptions {
   runLadder: boolean;
   /** Anything extra worth recording alongside the standard fields. */
   note?: unknown;
+  /** The currently selected input device, if any (null = system default). */
+  selectedDeviceId?: string | null;
 }
 
 /**
@@ -148,6 +150,10 @@ export async function collectDiagnostics(options: DiagnosticOptions): Promise<Re
     supportedConstraints: navigator.mediaDevices.getSupportedConstraints(),
     devices: await listAudioDevices(),
   };
+
+  if (options.selectedDeviceId !== undefined) {
+    report.selectedDeviceId = options.selectedDeviceId;
+  }
 
   if (options.error !== undefined) {
     report.error = describeError(options.error);
@@ -178,6 +184,13 @@ export async function collectDiagnostics(options: DiagnosticOptions): Promise<Re
     }
 
     report.constraintLadder = results;
+    // Re-enumerate now. The list gathered above was taken before any
+    // successful request, and browsers withhold device LABELS until
+    // permission has been granted at least once — so the first pass is
+    // usually a list of anonymous ids. If any rung succeeded, this second
+    // pass has real names in it.
+    report.devicesAfterPermission = await listAudioDevices();
+
     const firstOk = results.find((r) => r.ok);
     report.verdict = firstOk
       ? `First working request: "${firstOk.label}"`

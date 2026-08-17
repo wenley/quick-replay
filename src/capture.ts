@@ -5,8 +5,9 @@
 
 import type { RingBuffer } from './ring-buffer.ts';
 import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts';
-import { MIC_CONSTRAINTS } from './config.ts';
-import { el, messageOf } from './dom.ts';
+import { el } from './dom.ts';
+import { describeError } from './diagnostics.ts';
+import { getUserMediaWithRetry } from './get-user-media.ts';
 
 export interface Capture {
   /** Acquire the mic and build source -> worklet -> gain(0) -> destination. */
@@ -24,6 +25,8 @@ export interface CaptureDeps {
   ringBuffer: RingBuffer;
   /** Whether the app still wants a mic by the time getUserMedia resolves. */
   isMicWanted: () => boolean;
+  /** Constraints for the next acquire() — device selection lives here. */
+  getConstraints: () => MediaStreamConstraints;
   /** Whether the app is in Record. Gates start(), and drives the level meter loop. */
   isRecording: () => boolean;
   /** Every entry into Record begins a new take. */
@@ -84,10 +87,13 @@ export function createCapture(deps: CaptureDeps): Capture {
   async function acquire(): Promise<void> {
     let stream: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      // Retried on a transient abort, same as the arm-time probe — an
+      // interface that refuses its first open would otherwise drop us back to
+      // Standby every time Record is entered from a cold device.
+      stream = await getUserMediaWithRetry(deps.getConstraints());
     } catch (err) {
-      const detail = messageOf(err);
-      deps.onError(`Microphone access failed: ${detail || err}`);
+      const { name, message } = describeError(err);
+      deps.onError(`Microphone access failed: ${name} — ${message}`);
       throw err;
     }
 

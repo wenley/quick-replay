@@ -31,11 +31,19 @@ function readMaxSeconds(): number {
 
 export const MAX_SECONDS = readMaxSeconds();
 
-export const MIC_CONSTRAINTS: MediaStreamConstraints = {
-  audio: {
-    echoCancellation: false,
-    autoGainControl: false,
-    noiseSuppression: false,
-    channelCount: 1,
-  },
-};
+export const DEVICE_STORAGE_KEY = 'quick-replay:input-device';
+
+/** Capture constraints, optionally pinned to a specific input device. */
+export function micConstraints(deviceId: string | null): MediaStreamConstraints {
+  return {
+    audio: {
+      echoCancellation: false,
+      autoGainControl: false,
+      noiseSuppression: false,
+      channelCount: 1,
+      ...(deviceId !== null ? { deviceId: { exact: deviceId } } : {}),
+    },
+  };
+}
+
+export const MIC_CONSTRAINTS: MediaStreamConstraints = micConstraints(null);

@@ -419,6 +419,23 @@
 
   /* key legend */
 
+  /* --- input device --- */
+
+  #device-select {
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    font-size: 0.95rem;
+    outline: none;
+  }
+
+  #device-select:focus-visible {
+    box-shadow: 0 0 0 2px var(--playback);
+  }
+
   /* --- playback gain --- */
 
   #gain-row {
@@ -741,6 +758,11 @@
           <span class="duration-annotation" id="duration-annotation-300"></span>
         </button>
       </div>
+    </div>
+
+    <div id="device-section">
+      <div class="section-label">Input device</div>
+      <select id="device-select" aria-label="Microphone input device"></select>
     </div>
 
     <div id="gain-section">

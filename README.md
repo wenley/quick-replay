@@ -75,6 +75,26 @@ clicking the lit button — leaves playback exactly as `Space` would. A
 *different* duration key re-triggers instead, switching the replay to that
 length without leaving playback.
 
+## Input device
+
+A dropdown lists the available microphone inputs and defaults to **System
+default**. Picking a specific device pins capture to it, which is the fix if
+you have an external mic set as your system default and arming fails with
+`AbortError: The operation was aborted` — pick it explicitly instead of
+relying on the OS default. The choice persists across reloads, and the list
+updates live as devices are plugged or unplugged; if the device you had
+selected disappears, quick-replay falls back to the system default and lets
+you know.
+
+Device *names* only appear once mic permission has been granted at least
+once — before that the browser hides them for privacy, so the list shows
+generic "Input N" labels until after you've armed the first time.
+
+Switching devices while Standby or Playback has no immediate effect — the
+new device is simply what the next `r` press picks up. Switching while
+already in Record takes effect immediately and starts a new take, since a
+device change is a genuine discontinuity in the audio.
+
 ## Playback volume
 
 A slider sets playback gain from **−30 dB (muted) to +18 dB (~8×)**, defaulting

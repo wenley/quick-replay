@@ -20,6 +20,10 @@ function buttonById(id: string): HTMLButtonElement | null {
   return document.getElementById(id) as HTMLButtonElement | null;
 }
 
+function selectById(id: string): HTMLSelectElement | null {
+  return document.getElementById(id) as HTMLSelectElement | null;
+}
+
 export interface Elements {
   armScreen: HTMLElement | null;
   armButton: HTMLButtonElement | null;
@@ -46,6 +50,7 @@ export interface Elements {
   gainClipWarning: HTMLElement | null;
   speedSlider: HTMLInputElement | null;
   speedValue: HTMLElement | null;
+  deviceSelect: HTMLSelectElement | null;
 }
 
 export const el: Elements = {
@@ -74,6 +79,7 @@ export const el: Elements = {
   gainClipWarning: byId('gain-clip-warning'),
   speedSlider: inputById('speed-slider'),
   speedValue: byId('speed-value'),
+  deviceSelect: selectById('device-select'),
 };
 
 // --- small utils ---------------------------------------------------------
@@ -88,15 +94,6 @@ export function flashMessage(text: string): void {
   flashTimer = setTimeout(() => {
     flashEl.classList.remove('visible');
   }, 2000);
-}
-
-// Reads `.message` off an unknown error-shaped value without `any`. Returns
-// undefined when there is no truthy `message` property to read.
-export function messageOf(err: unknown): unknown {
-  if (typeof err === 'object' && err !== null && 'message' in err) {
-    return (err as { message?: unknown }).message;
-  }
-  return undefined;
 }
 
 export function showArmError(err: unknown): void {

@@ -14,16 +14,18 @@ import {
   initialState, reduce,
   type Mode, type Effect, type Event, type State,
 } from './transitions.ts';
-import { DURATIONS, MAX_SECONDS, MIC_CONSTRAINTS } from './config.ts';
+import { DURATIONS, MAX_SECONDS } from './config.ts';
 import { formatMinSec, formatSpeed } from './format.ts';
 import { createTakeTracker, type TakeTracker } from './takes.ts';
 import { el, flashMessage, showArmError, setFocusBannerVisible, showRuntimeError } from './dom.ts';
 import { createTimeline, type TimelineModel } from './timeline.ts';
 import { createGainControl } from './gain.ts';
 import { createSpeedControl, SPEED_MAX } from './speed.ts';
+import { createDevicePicker } from './devices.ts';
 import { createCapture, type Capture } from './capture.ts';
 import { createPlayback, type Playback } from './playback.ts';
 import { reportDiagnostics, installDiagnosticsHook } from './diagnostics.ts';
+import { getUserMediaWithRetry, type RetryNotice } from './get-user-media.ts';
 
 // --- module-level audio state ------------------------------------------
 
@@ -358,6 +360,30 @@ const speedControl = createSpeedControl(() => {
   dispatch({ type: 'duration', seconds: playback.lastSeconds, source: null });
 });
 
+// --- input device ----------------------------------------------------------
+
+const devicePicker = createDevicePicker({ onChange: () => { void switchInputDevice(); } });
+
+// Switching devices while a mic isn't held is a no-op — the next acquire()
+// picks up the new constraints on its own. While one IS held, release and
+// re-acquire so the change takes effect immediately. Note this means
+// switching mid-Record starts a new take, which is correct: it's a genuine
+// discontinuity in the audio.
+async function switchInputDevice(): Promise<void> {
+  if (!capture || !capture.micHeld) return;
+  const wasRecording = reducerState.mode === RECORD;
+  capture.release();
+  try {
+    await capture.acquire();
+    if (wasRecording) capture.start();
+  } catch {
+    // acquire() already reported through onError; drop to Standby rather
+    // than sit in Record with no microphone.
+    dispatch({ type: 'mode', to: STANDBY });
+  }
+  render();
+}
+
 // --- focus warning -------------------------------------------------------
 
 window.addEventListener('blur', () => setFocusBannerVisible(true));
@@ -380,8 +406,32 @@ if (el.armButton) {
     armButton.disabled = true;
     if (el.armError) el.armError.classList.remove('visible');
 
+    const retries: RetryNotice[] = [];
+
     try {
+      // Constructed synchronously, still inside the click, so the context is
+      // created while this gesture is unambiguously active.
       audioCtx = new AudioContext();
+
+      // Ask for the microphone BEFORE anything that awaits. This used to sit
+      // at the end, behind resume() and a network fetch for the worklet, so
+      // the request reached the browser a long way from the click that
+      // authorised it. Retried because some interfaces abort their first open
+      // — see get-user-media.ts.
+      const probeStream = await getUserMediaWithRetry(
+        devicePicker.constraints(),
+        (notice) => retries.push(notice),
+      );
+      // What the device actually gave us, before we hand it back. Worth
+      // recording even on success: comparing a working machine's settings
+      // against a failing one is often what identifies the difference.
+      const probeTrack = probeStream.getAudioTracks()[0];
+      const probeSettings = probeTrack ? probeTrack.getSettings() : null;
+      const probeLabel = probeTrack ? probeTrack.label : null;
+      // Released immediately — the browser remembers the grant per-origin, so
+      // later acquires (on 'r') never re-prompt and cost near-zero latency.
+      probeStream.getTracks().forEach((track) => track.stop());
+
       await audioCtx.resume();
       await audioCtx.audioWorklet.addModule('./recorder-worklet.js');
 
@@ -393,6 +443,7 @@ if (el.armButton) {
         audioCtx,
         ringBuffer,
         isMicWanted: micIsWanted,
+        getConstraints: () => devicePicker.constraints(),
         isRecording: () => reducerState.mode === RECORD,
         onTakeBegin: () => takeTracker?.beginNewTake(),
         onFramesCaptured: (startAbs, endAbs) => takeTracker?.noteCapturedFrames(startAbs, endAbs),
@@ -410,22 +461,12 @@ if (el.armButton) {
         onMaterialPeak: (peak) => gainControl.setMaterialPeak(peak),
       });
 
-      // Trigger the permission prompt once up front, then immediately
-      // release — the browser remembers the grant per-origin so later
-      // acquires (on 'r') never re-prompt and cost near-zero latency.
-      const probeStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
-      // What the device actually gave us, before we hand it back. Worth
-      // recording even on success: comparing a working machine's settings
-      // against a failing one is often what identifies the difference.
-      const probeTrack = probeStream.getAudioTracks()[0];
-      const probeSettings = probeTrack ? probeTrack.getSettings() : null;
-      const probeLabel = probeTrack ? probeTrack.label : null;
-      probeStream.getTracks().forEach((track) => track.stop());
       void reportDiagnostics({
         stage: 'arm succeeded',
         audioCtx,
         runLadder: false,
-        note: { probeSettings, probeLabel },
+        note: { probeSettings, probeLabel, retries },
+        selectedDeviceId: devicePicker.deviceId,
       });
 
       armed = true;
@@ -433,6 +474,10 @@ if (el.armButton) {
 
       if (el.armScreen) el.armScreen.classList.add('hidden');
       if (el.mainUi) el.mainUi.classList.remove('hidden');
+
+      // Device labels only become readable once permission has been
+      // granted, so the picker was unlabelled until now.
+      void devicePicker.refresh();
 
       render();
     } catch (err) {
@@ -445,6 +490,8 @@ if (el.armButton) {
         audioCtx,
         error: err,
         runLadder: true,
+        note: { retries },
+        selectedDeviceId: devicePicker.deviceId,
       });
     }
   });
