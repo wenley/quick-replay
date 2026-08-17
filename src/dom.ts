@@ -4,6 +4,8 @@
 // small status widgets (flash messages, arm/runtime errors, the focus
 // banner) that write directly to those elements.
 
+import { describeError } from './diagnostics.ts';
+
 // --- DOM refs ------------------------------------------------------------
 
 function byId(id: string): HTMLElement | null {
@@ -100,8 +102,14 @@ export function messageOf(err: unknown): unknown {
 export function showArmError(err: unknown): void {
   console.error('quick-replay: arm failed', err);
   if (el.armError) {
-    const detail = messageOf(err);
-    el.armError.textContent = `Failed to start: ${err && detail ? detail : err}`;
+    // Lead with the error's NAME. getUserMedia rejects with a DOMException
+    // whose message is often uselessly vague ("The operation was aborted"),
+    // while the name — AbortError, NotReadableError, OverconstrainedError —
+    // is what actually says which kind of failure this was.
+    const { name, message } = describeError(err);
+    el.armError.textContent =
+      `Failed to start: ${name} — ${message}. ` +
+      `A diagnostic report has been printed in the terminal running the server.`;
     el.armError.classList.add('visible');
   }
 }

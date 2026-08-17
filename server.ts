@@ -126,15 +126,66 @@ function sendText(
   res.end(body);
 }
 
+export const DIAG_PATH = '/__diag';
+const DIAG_MAX_BYTES = 256 * 1024;
+
+/**
+ * Diagnostics sink. The browser is where every interesting failure happens —
+ * mic acquisition, worklet loading, the audio graph — and none of it is
+ * visible from here. This prints a posted report to the server's stdout so it
+ * can be read from the terminal rather than out of someone's devtools.
+ *
+ * Never touches disk, and the server is bound to 127.0.0.1, so a report goes
+ * to the terminal that started it and nowhere else. No audio is ever sent —
+ * see collectDiagnostics() for exactly what a report contains.
+ */
+function handleDiagnostics(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const chunks: Buffer[] = [];
+  let received = 0;
+  let aborted = false;
+
+  req.on('data', (chunk: Buffer) => {
+    received += chunk.length;
+    if (received > DIAG_MAX_BYTES) {
+      aborted = true;
+      sendText(res, 413, 'Diagnostic report too large');
+      req.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+
+  req.on('end', () => {
+    if (aborted) return;
+    const raw = Buffer.concat(chunks).toString('utf8');
+    const stamp = new Date().toISOString();
+    console.log(`\n${'='.repeat(70)}\n[${stamp}] diagnostic report from the page\n${'='.repeat(70)}`);
+    try {
+      console.log(JSON.stringify(JSON.parse(raw), null, 2));
+    } catch {
+      // Not JSON — print it raw rather than losing it to a parse error.
+      console.log(raw);
+    }
+    console.log('='.repeat(70) + '\n');
+    res.writeHead(204, { 'Cache-Control': 'no-store' });
+    res.end();
+  });
+}
+
 function createRequestHandler(max: number): (req: http.IncomingMessage, res: http.ServerResponse) => void {
   return function handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      sendText(res, 405, 'Method Not Allowed');
+    if (req.url === undefined) {
+      sendText(res, 400, 'Bad Request');
       return;
     }
 
-    if (req.url === undefined) {
-      sendText(res, 400, 'Bad Request');
+    if (req.method === 'POST' && req.url.split('?')[0] === DIAG_PATH) {
+      handleDiagnostics(req, res);
+      return;
+    }
+
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      sendText(res, 405, 'Method Not Allowed');
       return;
     }
 

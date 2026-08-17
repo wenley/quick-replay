@@ -23,6 +23,7 @@ import { createGainControl } from './gain.ts';
 import { createSpeedControl, SPEED_MAX } from './speed.ts';
 import { createCapture, type Capture } from './capture.ts';
 import { createPlayback, type Playback } from './playback.ts';
+import { reportDiagnostics, installDiagnosticsHook } from './diagnostics.ts';
 
 // --- module-level audio state ------------------------------------------
 
@@ -413,7 +414,19 @@ if (el.armButton) {
       // release — the browser remembers the grant per-origin so later
       // acquires (on 'r') never re-prompt and cost near-zero latency.
       const probeStream = await navigator.mediaDevices.getUserMedia(MIC_CONSTRAINTS);
+      // What the device actually gave us, before we hand it back. Worth
+      // recording even on success: comparing a working machine's settings
+      // against a failing one is often what identifies the difference.
+      const probeTrack = probeStream.getAudioTracks()[0];
+      const probeSettings = probeTrack ? probeTrack.getSettings() : null;
+      const probeLabel = probeTrack ? probeTrack.label : null;
       probeStream.getTracks().forEach((track) => track.stop());
+      void reportDiagnostics({
+        stage: 'arm succeeded',
+        audioCtx,
+        runLadder: false,
+        note: { probeSettings, probeLabel },
+      });
 
       armed = true;
       reducerState = initialState();
@@ -425,9 +438,22 @@ if (el.armButton) {
     } catch (err) {
       showArmError(err);
       armButton.disabled = false;
+      // Walk the constraint ladder while the failure is fresh, so the report
+      // says WHICH request the device refused rather than only that one did.
+      void reportDiagnostics({
+        stage: 'arm failed',
+        audioCtx,
+        error: err,
+        runLadder: true,
+      });
     }
   });
 }
+
+// `window.quickReplayDiagnostics()` from the devtools console, any time —
+// useful for capturing a report when the app armed fine but the mic misbehaves
+// later, e.g. after switching input device mid-session.
+installDiagnosticsHook(() => audioCtx);
 
 // Periodic light re-render so the buffer-fill readout / duration
 // annotations keep advancing even between worklet messages or effects.
