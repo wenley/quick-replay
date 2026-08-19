@@ -509,7 +509,25 @@ if (el.armButton) {
 // `window.quickReplayDiagnostics()` from the devtools console, any time —
 // useful for capturing a report when the app armed fine but the mic misbehaves
 // later, e.g. after switching input device mid-session.
-installDiagnosticsHook(() => audioCtx);
+installDiagnosticsHook(() => ({
+  audioCtx,
+  selectedDeviceId: devicePicker.deviceId,
+  appState: {
+    armed,
+    mode: reducerState.mode,
+    previousMode: reducerState.previousMode,
+    playbackSource: reducerState.playbackSource,
+    micHeld: capture ? capture.micHeld : false,
+    // The buffer being empty is the difference between "the key did nothing"
+    // and "there was nothing to play" — dispatchDuration bails on available === 0.
+    bufferAvailableFrames: ringBuffer ? ringBuffer.available : null,
+    bufferAvailableSeconds: ringBuffer && audioCtx ? ringBuffer.available / audioCtx.sampleRate : null,
+    bufferTotalWritten: ringBuffer ? ringBuffer.totalWritten : null,
+    takeCount: takeTracker ? takeTracker.takes.length : null,
+    hasPlayback: playback !== null,
+    lastPlaybackSeconds: playback ? playback.lastSeconds : null,
+  },
+}));
 
 // Periodic light re-render so the buffer-fill readout / duration
 // annotations keep advancing even between worklet messages or effects.

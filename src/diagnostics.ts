@@ -126,6 +126,8 @@ export interface DiagnosticOptions {
   /** What the app was doing when this was collected. */
   stage: string;
   audioCtx: AudioContext | null;
+  /** Live app state — mode, mic, buffer fill. Whatever the caller can see. */
+  appState?: unknown;
   /** The failure that prompted this, if any. */
   error?: unknown;
   /** Walk the constraint ladder. Off for a plain success report. */
@@ -153,6 +155,10 @@ export async function collectDiagnostics(options: DiagnosticOptions): Promise<Re
 
   if (options.selectedDeviceId !== undefined) {
     report.selectedDeviceId = options.selectedDeviceId;
+  }
+
+  if (options.appState !== undefined) {
+    report.appState = options.appState;
   }
 
   if (options.error !== undefined) {
@@ -226,15 +232,27 @@ export async function reportDiagnostics(options: DiagnosticOptions): Promise<voi
 // not only when arming has failed.
 declare global {
   interface Window {
-    quickReplayDiagnostics?: (audioCtx?: AudioContext | null) => Promise<void>;
+    quickReplayDiagnostics?: (options?: { ladder?: boolean }) => Promise<void>;
   }
 }
 
-export function installDiagnosticsHook(getAudioCtx: () => AudioContext | null): void {
-  window.quickReplayDiagnostics = (audioCtx?: AudioContext | null) =>
-    reportDiagnostics({
+export interface DiagnosticsSnapshot {
+  audioCtx: AudioContext | null;
+  appState: unknown;
+  selectedDeviceId: string | null;
+}
+
+export function installDiagnosticsHook(snapshot: () => DiagnosticsSnapshot): void {
+  window.quickReplayDiagnostics = (options?: { ladder?: boolean }) => {
+    const s = snapshot();
+    return reportDiagnostics({
       stage: 'manual (window.quickReplayDiagnostics)',
-      audioCtx: audioCtx ?? getAudioCtx(),
-      runLadder: true,
+      audioCtx: s.audioCtx,
+      appState: s.appState,
+      selectedDeviceId: s.selectedDeviceId,
+      // The ladder re-opens every input device; only worth it when the
+      // problem is acquiring a mic in the first place.
+      runLadder: options?.ladder === true,
     });
+  };
 }
