@@ -256,31 +256,56 @@ function render(): void {
 
 // --- keyboard ----------------------------------------------------------
 
-window.addEventListener('keydown', (event: KeyboardEvent) => {
-  if (!armed) return;
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
-  if (event.repeat) return;
+// A short history of what the keyboard handler decided, for diagnostics. A
+// key that "does nothing" is ambiguous from the outside — not armed, no
+// matching branch, or a branch that ran and had nothing to do all look the
+// same. This records which it was.
+export interface KeyRecord {
+  key: string;
+  code: string;
+  handledAs: string;
+  mode: string;
+  bufferFrames: number | null;
+}
+
+const recentKeys: KeyRecord[] = [];
+
+function noteKey(event: KeyboardEvent, handledAs: string): void {
+  recentKeys.push({
+    key: event.key,
+    code: event.code,
+    handledAs,
+    mode: reducerState.mode,
+    bufferFrames: ringBuffer ? ringBuffer.available : null,
+  });
+  if (recentKeys.length > 20) recentKeys.shift();
+}
+
+/** Returns a description of the branch taken, for the key log. */
+function handleKeydown(event: KeyboardEvent): string {
+  if (!armed) return 'ignored: not armed';
+  if (event.metaKey || event.ctrlKey || event.altKey) return 'ignored: modifier held';
+  if (event.repeat) return 'ignored: auto-repeat';
 
   const key = event.key;
 
   if (key >= '1' && key <= '6') {
     const dur = DURATIONS.find((d) => d.key === key);
-    if (dur) {
-      event.preventDefault();
-      dispatchDuration(dur.seconds, null, dur.key);
-    }
-    return;
+    if (!dur) return `digit ${key} matched no entry in DURATIONS`;
+    event.preventDefault();
+    dispatchDuration(dur.seconds, null, dur.key);
+    return `duration ${dur.label} (source ${dur.key})`;
   }
 
   if (key === ' ' || event.code === 'Space') {
     event.preventDefault();
     dispatch({ type: 'back' });
-    return;
+    return 'back';
   }
 
   if (key === 'Escape') {
     dispatch({ type: 'escape' });
-    return;
+    return 'escape';
   }
 
   // When a slider itself has focus, let its native arrow handling run and
@@ -292,35 +317,41 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
   if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
     event.preventDefault();
     gainControl.nudge(key === 'ArrowUp' ? 1 : -1);
-    return;
+    return 'gain nudge';
   }
 
   if (key === '0') {
     event.preventDefault();
     gainControl.reset();
     flashMessage('volume reset to 0 dB');
-    return;
+    return 'gain reset';
   }
 
   const lower = key.toLowerCase();
   if (lower === 'q') {
     event.preventDefault();
     replayCurrentTake();
-    return;
+    return 'replay current take';
   }
   if (lower === 'r') {
     dispatch({ type: 'mode', to: RECORD });
-    return;
+    return 'mode: record';
   }
   if (lower === 's') {
     dispatch({ type: 'mode', to: STANDBY });
-    return;
+    return 'mode: standby';
   }
   if (lower === 'x') {
     event.preventDefault();
     speedControl.cycle();
-    return;
+    return 'cycle speed';
   }
+
+  return 'unhandled key';
+}
+
+window.addEventListener('keydown', (event: KeyboardEvent) => {
+  noteKey(event, handleKeydown(event));
 });
 
 // --- mouse (fallback) -------------------------------------------------
@@ -525,6 +556,7 @@ installDiagnosticsHook(() => ({
     bufferTotalWritten: ringBuffer ? ringBuffer.totalWritten : null,
     takeCount: takeTracker ? takeTracker.takes.length : null,
     hasPlayback: playback !== null,
+    recentKeys,
     lastPlaybackSeconds: playback ? playback.lastSeconds : null,
   },
 }));
