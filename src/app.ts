@@ -350,9 +350,41 @@ function handleKeydown(event: KeyboardEvent): string {
   return 'unhandled key';
 }
 
+// Opt-in on-screen echo of every keydown the page receives, enabled with
+// ?keys=1. Answers "is the page even getting my keystrokes?" without needing
+// devtools — and devtools having focus is itself a way to lose them, so a
+// console-based answer can't be trusted for this particular question.
+const keyEchoEnabled = new URLSearchParams(window.location.search).has('keys');
+let keyEchoEl: HTMLElement | null = null;
+
+function echoKey(record: KeyRecord): void {
+  if (!keyEchoEnabled) return;
+  if (!keyEchoEl) {
+    keyEchoEl = document.createElement('div');
+    keyEchoEl.style.cssText =
+      'position:fixed;left:12px;bottom:12px;z-index:9999;padding:8px 12px;' +
+      'border-radius:8px;font:13px/1.4 monospace;white-space:pre;' +
+      'background:#15171b;border:1px solid #262a31;color:#e8eaed;';
+    document.body.appendChild(keyEchoEl);
+  }
+  keyEchoEl.textContent =
+    `key ${JSON.stringify(record.key)}  code ${record.code}\n-> ${record.handledAs}`;
+}
+
+// Registered in the CAPTURE phase, so it runs before whatever element happens
+// to have focus and cannot be pre-empted by anything in the page. The
+// slider-focus check below is what keeps the arrow keys behaving.
 window.addEventListener('keydown', (event: KeyboardEvent) => {
-  noteKey(event, handleKeydown(event));
-});
+  const handledAs = handleKeydown(event);
+  noteKey(event, handledAs);
+  echoKey({
+    key: event.key,
+    code: event.code,
+    handledAs,
+    mode: reducerState.mode,
+    bufferFrames: ringBuffer ? ringBuffer.available : null,
+  });
+}, true);
 
 // --- mouse (fallback) -------------------------------------------------
 
