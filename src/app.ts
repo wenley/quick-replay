@@ -95,7 +95,7 @@ async function runEffect(eff: Effect): Promise<void> {
       capture?.flush();
       break;
     case START_PLAYBACK:
-      playback?.start(eff.seconds, pendingPlaybackLabel);
+      playback?.start(eff.seconds, pendingPlaybackLabel, eff.startAbs);
       pendingPlaybackLabel = null;
       break;
     case STOP_PLAYBACK:
@@ -137,13 +137,18 @@ async function dispatch(event: Event): Promise<void> {
   render();
 }
 
-function dispatchDuration(seconds: number, label: string | null = null, source: string | null = null): void {
+function dispatchDuration(
+  seconds: number,
+  label: string | null = null,
+  source: string | null = null,
+  startAbs?: number,
+): void {
   if (!ringBuffer || ringBuffer.available === 0) {
     flashMessage('nothing recorded yet');
     return;
   }
   pendingPlaybackLabel = label;
-  dispatch({ type: 'duration', seconds, source });
+  dispatch({ type: 'duration', seconds, source, startAbs });
 }
 
 // `q` — replay the current take from its start, or from as far back as the
@@ -171,7 +176,13 @@ function modeLabelText(mode: Mode): string {
 
 // --- timeline ------------------------------------------------------------
 
-const timeline = createTimeline();
+const timeline = createTimeline({
+  onTakeClick: (take) => {
+    if (!audioCtx) return;
+    const seconds = (take.endAbs - take.startAbs) / audioCtx.sampleRate;
+    dispatchDuration(seconds, `take ${take.id}`, `take:${take.id}`, take.startAbs);
+  },
+});
 
 function render(): void {
   if (!el.mainUi) return;

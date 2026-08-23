@@ -9,6 +9,12 @@ export interface RingBuffer {
    * normal result, not an error, and callers are expected to surface it.
    */
   readLast(frames: number): Float32Array;
+  /**
+   * Frames in the absolute range [startAbs, endAbs), clamped to what is still
+   * retained. Returns a SHORTER array than the range asked for — or an empty
+   * one — when the range has been partly or wholly overwritten.
+   */
+  readRange(startAbs: number, endAbs: number): Float32Array;
   /** Frames currently retained, i.e. `min(totalWritten, capacity)`. */
   readonly available: number;
   readonly capacity: number;
@@ -87,6 +93,31 @@ export function createRingBuffer(capacityFrames: number): RingBuffer {
     return out;
   }
 
+  function readRange(startAbs: number, endAbs: number): Float32Array {
+    const avail = getAvailable();
+    const oldestAbs = totalWritten - avail;
+    const clampedStart = Math.max(startAbs, oldestAbs);
+    const clampedEnd = Math.min(endAbs, totalWritten);
+    const n = clampedEnd - clampedStart;
+    if (n <= 0) return new Float32Array(0);
+
+    // How far back clampedStart sits from the write head, then the same
+    // wraparound math readLast uses to turn that into a physical index.
+    const framesFromEnd = totalWritten - clampedStart;
+    const start = (writeIndex - framesFromEnd + capacity) % capacity;
+    const spaceToEnd = capacity - start;
+
+    const out = new Float32Array(n);
+    if (n <= spaceToEnd) {
+      out.set(buffer.subarray(start, start + n));
+    } else {
+      out.set(buffer.subarray(start, capacity), 0);
+      out.set(buffer.subarray(0, n - spaceToEnd), spaceToEnd);
+    }
+
+    return out;
+  }
+
   function clear(): void {
     writeIndex = 0;
     totalWritten = 0;
@@ -95,6 +126,7 @@ export function createRingBuffer(capacityFrames: number): RingBuffer {
   return {
     write,
     readLast,
+    readRange,
     get available() {
       return getAvailable();
     },

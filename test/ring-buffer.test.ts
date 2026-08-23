@@ -116,3 +116,64 @@ test('capacityFrames must be positive', () => {
   assert.throws(() => createRingBuffer(0));
   assert.throws(() => createRingBuffer(-3));
 });
+
+// --- readRange ---------------------------------------------------------
+
+test('readRange fully inside the retained window returns exactly those values', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 8)); // 0..7, all retained
+  const out = rb.readRange(2, 6);
+  assert.deepEqual(Array.from(out), [2, 3, 4, 5]);
+});
+
+test('readRange whose start has been overwritten clamps to the oldest retained frame', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 25)); // 0..24, capacity 10 -> oldest retained is frame 15
+  const out = rb.readRange(5, 20);
+  assert.equal(out.length, 5);
+  assert.deepEqual(Array.from(out), [15, 16, 17, 18, 19]);
+});
+
+test('readRange with endAbs beyond totalWritten clamps to totalWritten', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 8)); // 0..7, totalWritten = 8
+  const out = rb.readRange(4, 100);
+  assert.deepEqual(Array.from(out), [4, 5, 6, 7]);
+});
+
+test('readRange entirely overwritten returns empty', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 25)); // oldest retained is frame 15
+  const out = rb.readRange(0, 10);
+  assert.equal(out.length, 0);
+});
+
+test('readRange with startAbs >= endAbs returns empty', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 8));
+  assert.equal(rb.readRange(5, 5).length, 0);
+  assert.equal(rb.readRange(6, 5).length, 0);
+});
+
+test('readRange straddling the physical wrap boundary returns values in order', () => {
+  const rb = createRingBuffer(10);
+  // Three writes of 5 frames each = 1.5x capacity, landing writeIndex mid-array
+  // (at physical index 5) so the retained window [5, 15) is split across the
+  // index-9/index-0 seam: frames 5-9 sit at indices 5-9, frames 10-14 at
+  // indices 0-4.
+  rb.write(ramp(0, 5));
+  rb.write(ramp(5, 5));
+  rb.write(ramp(10, 5));
+  // Ask for a sub-range straddling that seam.
+  const out = rb.readRange(8, 12);
+  assert.deepEqual(Array.from(out), [8, 9, 10, 11]);
+});
+
+test('readRange(totalWritten - n, totalWritten) agrees with readLast(n)', () => {
+  const rb = createRingBuffer(10);
+  rb.write(ramp(0, 25)); // wrapped several times
+  const n = 7;
+  const viaRange = rb.readRange(rb.totalWritten - n, rb.totalWritten);
+  const viaLast = rb.readLast(n);
+  assert.deepEqual(Array.from(viaRange), Array.from(viaLast));
+});

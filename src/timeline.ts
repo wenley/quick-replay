@@ -37,6 +37,11 @@ export interface Timeline {
   hideHighlight(): void;
 }
 
+export interface TimelineDeps {
+  /** Fired when a take's span on the timeline is clicked. */
+  onTakeClick: (take: { id: number; startAbs: number; endAbs: number }) => void;
+}
+
 const AXIS_INTERVALS_SECONDS = [5, 10, 15, 30, 60, 120, 300];
 
 function pickAxisInterval(maxSeconds: number): number {
@@ -46,7 +51,7 @@ function pickAxisInterval(maxSeconds: number): number {
   return AXIS_INTERVALS_SECONDS[AXIS_INTERVALS_SECONDS.length - 1];
 }
 
-export function createTimeline(): Timeline {
+export function createTimeline(deps: TimelineDeps): Timeline {
   // --- timeline highlight (hover preview) -----------------------------------
 
   function showTimelineHighlight(pct: number): void {
@@ -103,6 +108,20 @@ export function createTimeline(): Timeline {
       if (pct !== undefined && pct !== '') showTimelineHighlight(Number(pct));
     });
     el.timelineTicks.addEventListener('mouseleave', hideTimelineHighlight);
+  }
+
+  // Click is delegated to the container rather than bound per span: the
+  // track's children are rebuilt several times a second while recording, and
+  // a listener bound to a span would die under its own feet as soon as that
+  // span is replaced.
+  if (el.timelineTrack) {
+    el.timelineTrack.addEventListener('click', (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const { takeId, startAbs, endAbs } = target.dataset;
+      if (takeId === undefined || startAbs === undefined || endAbs === undefined) return;
+      deps.onTakeClick({ id: Number(takeId), startAbs: Number(startAbs), endAbs: Number(endAbs) });
+    });
   }
 
   function renderTimeline(model: TimelineModel | null): void {
@@ -167,6 +186,9 @@ export function createTimeline(): Timeline {
       const takeSeconds = (take.endAbs - take.startAbs) / model.sampleRate;
       const clockStart = new Date(take.wallClockStart).toLocaleTimeString();
       span.title = `Take ${take.id} — ${formatMinSec(takeSeconds)}, started ${clockStart}`;
+      span.dataset.takeId = String(take.id);
+      span.dataset.startAbs = String(take.startAbs);
+      span.dataset.endAbs = String(take.endAbs);
       trackFrag.appendChild(span);
 
       // Start marker: only when the true start is still retained (not

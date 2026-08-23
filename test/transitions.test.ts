@@ -265,6 +265,44 @@ test('the no-op paths leave playbackSource untouched', () => {
   assert.equal(endedNoOp.state.playbackSource, '2');
 });
 
+// --- startAbs plumbing --------------------------------------------------
+
+test('a duration event carrying startAbs produces a startPlayback effect carrying the same startAbs, on a fresh entry', () => {
+  const state: State = { mode: RECORD, previousMode: STANDBY, playbackSource: null };
+  const result = reduce(state, { type: 'duration', seconds: 5, source: 'take:1', startAbs: 12345 }, held);
+  assert.equal(result.state.mode, PLAYBACK);
+  const startEffect = result.effects.find((e) => e.type === START_PLAYBACK);
+  assert.ok(startEffect);
+  assert.equal(startEffect.startAbs, 12345);
+});
+
+test('a duration event carrying startAbs produces a startPlayback effect carrying the same startAbs, on a re-trigger', () => {
+  const state: State = { mode: PLAYBACK, previousMode: RECORD, playbackSource: '1' };
+  const result = reduce(state, { type: 'duration', seconds: 5, source: 'take:2', startAbs: 999 }, held);
+  assert.equal(result.state.mode, PLAYBACK);
+  const startEffect = result.effects.find((e) => e.type === START_PLAYBACK);
+  assert.ok(startEffect);
+  assert.equal(startEffect.startAbs, 999);
+});
+
+test('a duration event with no startAbs produces an effect with startAbs undefined', () => {
+  const state: State = { mode: RECORD, previousMode: STANDBY, playbackSource: null };
+  const result = reduce(state, { type: 'duration', seconds: 5, source: '1' }, held);
+  const startEffect = result.effects.find((e) => e.type === START_PLAYBACK);
+  assert.ok(startEffect);
+  assert.equal(startEffect.startAbs, undefined);
+  assert.notEqual(startEffect.startAbs, null);
+  assert.notEqual(startEffect.startAbs, 0);
+});
+
+test('re-clicking the same take source still exits playback, unaffected by startAbs', () => {
+  const state: State = { mode: PLAYBACK, previousMode: RECORD, playbackSource: 'take:3' };
+  const exit = reduce(state, { type: 'duration', seconds: 5, source: 'take:3', startAbs: 4242 }, held);
+  assert.equal(exit.state.mode, RECORD);
+  assert.equal(exit.state.playbackSource, null);
+  assert.deepEqual(types(exit.effects), [STOP_PLAYBACK, START_CAPTURE]);
+});
+
 test('the same key can enter, exit, and enter again', () => {
   let state = initialState();
   state = reduce(state, { type: 'mode', to: RECORD }, noMic).state;

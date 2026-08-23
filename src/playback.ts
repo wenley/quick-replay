@@ -23,7 +23,7 @@ export interface PlaybackDeps {
 }
 
 export interface Playback {
-  start(seconds: number, label: string | null): void;
+  start(seconds: number, label: string | null, startAbs?: number): void;
   stop(): void;
   /** Retune a running stretched playback without restarting it. */
   retuneSpeed(): void;
@@ -113,18 +113,26 @@ export function createPlayback(deps: PlaybackDeps): Playback {
 
   // --- playback --------------------------------------------------------------
 
-  function startPlayback(seconds: number, label: string | null): void {
+  function startPlayback(seconds: number, label: string | null, startAbs?: number): void {
     const ctx = deps.audioCtx;
     const buf = deps.ringBuffer;
 
     const frames = Math.floor(seconds * ctx.sampleRate);
-    const samples = buf.readLast(frames);
     // Which stretch of the buffer this replay is drawn from, in absolute frame
     // positions so the timeline can light it up. Captured here rather than
-    // derived at render time because readLast may have returned fewer frames
+    // derived at render time because the read may have returned fewer frames
     // than asked for, and the span must reflect what is actually being heard.
-    playbackSpanEndAbs = buf.totalWritten;
-    playbackSpanStartAbs = playbackSpanEndAbs - samples.length;
+    let samples: Float32Array;
+    if (startAbs === undefined) {
+      samples = buf.readLast(frames);
+      playbackSpanEndAbs = buf.totalWritten;
+      playbackSpanStartAbs = playbackSpanEndAbs - samples.length;
+    } else {
+      samples = buf.readRange(startAbs, startAbs + frames);
+      const clampedStart = Math.max(startAbs, buf.totalWritten - buf.available);
+      playbackSpanStartAbs = clampedStart;
+      playbackSpanEndAbs = clampedStart + samples.length;
+    }
     lastPlaybackSeconds = seconds;
     lastPlaybackLabel = label;
 

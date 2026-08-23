@@ -28,12 +28,12 @@ export type Effect =
   | { type: typeof START_CAPTURE }
   | { type: typeof STOP_CAPTURE }
   | { type: typeof FLUSH }
-  | { type: typeof START_PLAYBACK; seconds: number }
+  | { type: typeof START_PLAYBACK; seconds: number; startAbs?: number }
   | { type: typeof STOP_PLAYBACK };
 
 export type Event =
   | { type: 'mode'; to: NamedMode }
-  | { type: 'duration'; seconds: number; source: string | null }
+  | { type: 'duration'; seconds: number; source: string | null; startAbs?: number }
   | { type: 'playbackEnded' }
   | { type: 'back' }
   | { type: 'escape' };
@@ -82,8 +82,8 @@ function recordEntryEffects(fromPlayback: boolean, context: Context): Effect[] {
   return effects;
 }
 
-function playbackEntryEffects(seconds: number): Effect[] {
-  return [{ type: STOP_CAPTURE }, { type: FLUSH }, { type: START_PLAYBACK, seconds }];
+function playbackEntryEffects(seconds: number, startAbs?: number): Effect[] {
+  return [{ type: STOP_CAPTURE }, { type: FLUSH }, { type: START_PLAYBACK, seconds, startAbs }];
 }
 
 // Entering whichever mode a playback should fall back to.
@@ -115,7 +115,13 @@ function handleMode(state: State, to: NamedMode, context: Context): Result {
   };
 }
 
-function handleDuration(state: State, seconds: number, source: string | null, context: Context): Result {
+function handleDuration(
+  state: State,
+  seconds: number,
+  source: string | null,
+  context: Context,
+  startAbs?: number,
+): Result {
   if (state.mode === PLAYBACK && source !== null && state.playbackSource === source) {
     // Pressing (or clicking) the same trigger that launched the running
     // playback exits it, exactly like a `back` event.
@@ -131,7 +137,7 @@ function handleDuration(state: State, seconds: number, source: string | null, co
     // whatever mode we were in before the *original* entry into playback.
     return {
       state: { mode: PLAYBACK, previousMode: state.previousMode, playbackSource: source },
-      effects: [{ type: STOP_PLAYBACK }, { type: START_PLAYBACK, seconds }],
+      effects: [{ type: STOP_PLAYBACK }, { type: START_PLAYBACK, seconds, startAbs }],
     };
   }
 
@@ -139,7 +145,7 @@ function handleDuration(state: State, seconds: number, source: string | null, co
   // to, but only at this moment of entry.
   return {
     state: { mode: PLAYBACK, previousMode: state.mode, playbackSource: source },
-    effects: playbackEntryEffects(seconds),
+    effects: playbackEntryEffects(seconds, startAbs),
   };
 }
 
@@ -188,7 +194,7 @@ export function reduce(state: State, event: Event, context: Context): Result {
     case 'mode':
       return handleMode(state, event.to, context);
     case 'duration':
-      return handleDuration(state, event.seconds, event.source, context);
+      return handleDuration(state, event.seconds, event.source, context, event.startAbs);
     case 'playbackEnded':
       return handlePlaybackEnded(state, context);
     case 'back':

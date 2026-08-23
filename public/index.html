@@ -247,10 +247,19 @@
     top: 0;
     bottom: 0;
     background: var(--standby);
+    cursor: pointer;
+  }
+
+  .timeline-take:hover {
+    filter: brightness(1.3);
   }
 
   .timeline-take.active {
     background: var(--record);
+  }
+
+  .timeline-take.active:hover {
+    filter: brightness(1.15);
   }
 
   .timeline-boundary {

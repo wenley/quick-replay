@@ -153,6 +153,11 @@ reach back past a boundary into the previous take.
 `q` replays the current take from its start, or from as far back as the buffer
 still holds if the take has grown longer than the buffer.
 
+Clicking a take's span on the timeline replays that take from its start.
+Clicking it again leaves playback, exactly like re-pressing the duration key
+that launched a replay. A take partly overwritten by the rolling buffer plays
+from as far back as is still held, rather than from its original start.
+
 Take markers are stored as absolute positions in the audio stream rather than as
 offsets into the ring buffer. Once the buffer fills and old audio starts being
 overwritten, the markers don't move — the retained window slides forward past
