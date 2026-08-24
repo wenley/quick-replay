@@ -6,8 +6,7 @@
 import type { RingBuffer } from './ring-buffer.ts';
 import type { RecorderCommand, RecorderAudioMessage } from './audio-messages.ts';
 import { el } from './dom.ts';
-import { describeError } from './diagnostics.ts';
-import { getUserMediaWithRetry } from './get-user-media.ts';
+import { describeError } from './errors.ts';
 
 export interface Capture {
   /** Acquire the mic and build source -> worklet -> gain(0) -> destination. */
@@ -87,10 +86,7 @@ export function createCapture(deps: CaptureDeps): Capture {
   async function acquire(): Promise<void> {
     let stream: MediaStream;
     try {
-      // Retried on a transient abort, same as the arm-time probe — an
-      // interface that refuses its first open would otherwise drop us back to
-      // Standby every time Record is entered from a cold device.
-      stream = await getUserMediaWithRetry(deps.getConstraints());
+      stream = await navigator.mediaDevices.getUserMedia(deps.getConstraints());
     } catch (err) {
       const { name, message } = describeError(err);
       deps.onError(`Microphone access failed: ${name} — ${message}`);

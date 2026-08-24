@@ -24,8 +24,6 @@ import { createSpeedControl, SPEED_MAX } from './speed.ts';
 import { createDevicePicker } from './devices.ts';
 import { createCapture, type Capture } from './capture.ts';
 import { createPlayback, type Playback } from './playback.ts';
-import { reportDiagnostics, installDiagnosticsHook } from './diagnostics.ts';
-import { getUserMediaWithRetry, type RetryNotice } from './get-user-media.ts';
 
 // --- module-level audio state ------------------------------------------
 
@@ -267,56 +265,30 @@ function render(): void {
 
 // --- keyboard ----------------------------------------------------------
 
-// A short history of what the keyboard handler decided, for diagnostics. A
-// key that "does nothing" is ambiguous from the outside — not armed, no
-// matching branch, or a branch that ran and had nothing to do all look the
-// same. This records which it was.
-export interface KeyRecord {
-  key: string;
-  code: string;
-  handledAs: string;
-  mode: string;
-  bufferFrames: number | null;
-}
-
-const recentKeys: KeyRecord[] = [];
-
-function noteKey(event: KeyboardEvent, handledAs: string): void {
-  recentKeys.push({
-    key: event.key,
-    code: event.code,
-    handledAs,
-    mode: reducerState.mode,
-    bufferFrames: ringBuffer ? ringBuffer.available : null,
-  });
-  if (recentKeys.length > 20) recentKeys.shift();
-}
-
-/** Returns a description of the branch taken, for the key log. */
-function handleKeydown(event: KeyboardEvent): string {
-  if (!armed) return 'ignored: not armed';
-  if (event.metaKey || event.ctrlKey || event.altKey) return 'ignored: modifier held';
-  if (event.repeat) return 'ignored: auto-repeat';
+window.addEventListener('keydown', (event: KeyboardEvent) => {
+  if (!armed) return;
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.repeat) return;
 
   const key = event.key;
 
   if (key >= '1' && key <= '6') {
     const dur = DURATIONS.find((d) => d.key === key);
-    if (!dur) return `digit ${key} matched no entry in DURATIONS`;
+    if (!dur) return;
     event.preventDefault();
     dispatchDuration(dur.seconds, null, dur.key);
-    return `duration ${dur.label} (source ${dur.key})`;
+    return;
   }
 
   if (key === ' ' || event.code === 'Space') {
     event.preventDefault();
     dispatch({ type: 'back' });
-    return 'back';
+    return;
   }
 
   if (key === 'Escape') {
     dispatch({ type: 'escape' });
-    return 'escape';
+    return;
   }
 
   // When a slider itself has focus, let its native arrow handling run and
@@ -328,74 +300,36 @@ function handleKeydown(event: KeyboardEvent): string {
   if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
     event.preventDefault();
     gainControl.nudge(key === 'ArrowUp' ? 1 : -1);
-    return 'gain nudge';
+    return;
   }
 
   if (key === '0') {
     event.preventDefault();
     gainControl.reset();
     flashMessage('volume reset to 0 dB');
-    return 'gain reset';
+    return;
   }
 
   const lower = key.toLowerCase();
   if (lower === 'q') {
     event.preventDefault();
     replayCurrentTake();
-    return 'replay current take';
+    return;
   }
   if (lower === 'r') {
     dispatch({ type: 'mode', to: RECORD });
-    return 'mode: record';
+    return;
   }
   if (lower === 's') {
     dispatch({ type: 'mode', to: STANDBY });
-    return 'mode: standby';
+    return;
   }
   if (lower === 'x') {
     event.preventDefault();
     speedControl.cycle();
-    return 'cycle speed';
+    return;
   }
-
-  return 'unhandled key';
-}
-
-// Opt-in on-screen echo of every keydown the page receives, enabled with
-// ?keys=1. Answers "is the page even getting my keystrokes?" without needing
-// devtools — and devtools having focus is itself a way to lose them, so a
-// console-based answer can't be trusted for this particular question.
-const keyEchoEnabled = new URLSearchParams(window.location.search).has('keys');
-let keyEchoEl: HTMLElement | null = null;
-
-function echoKey(record: KeyRecord): void {
-  if (!keyEchoEnabled) return;
-  if (!keyEchoEl) {
-    keyEchoEl = document.createElement('div');
-    keyEchoEl.style.cssText =
-      'position:fixed;left:12px;bottom:12px;z-index:9999;padding:8px 12px;' +
-      'border-radius:8px;font:13px/1.4 monospace;white-space:pre;' +
-      'background:#15171b;border:1px solid #262a31;color:#e8eaed;';
-    document.body.appendChild(keyEchoEl);
-  }
-  keyEchoEl.textContent =
-    `key ${JSON.stringify(record.key)}  code ${record.code}\n-> ${record.handledAs}`;
-}
-
-// Registered in the CAPTURE phase, so it runs before whatever element happens
-// to have focus and cannot be pre-empted by anything in the page. The
-// slider-focus check below is what keeps the arrow keys behaving.
-window.addEventListener('keydown', (event: KeyboardEvent) => {
-  const handledAs = handleKeydown(event);
-  noteKey(event, handledAs);
-  echoKey({
-    key: event.key,
-    code: event.code,
-    handledAs,
-    mode: reducerState.mode,
-    bufferFrames: ringBuffer ? ringBuffer.available : null,
-  });
-}, true);
+});
 
 // --- mouse (fallback) -------------------------------------------------
 
@@ -480,28 +414,16 @@ if (el.armButton) {
     armButton.disabled = true;
     if (el.armError) el.armError.classList.remove('visible');
 
-    const retries: RetryNotice[] = [];
-
     try {
       // Constructed synchronously, still inside the click, so the context is
       // created while this gesture is unambiguously active.
       audioCtx = new AudioContext();
 
       // Ask for the microphone BEFORE anything that awaits. This used to sit
-      // at the end, behind resume() and a network fetch for the worklet, so
-      // the request reached the browser a long way from the click that
-      // authorised it. Retried because some interfaces abort their first open
-      // — see get-user-media.ts.
-      const probeStream = await getUserMediaWithRetry(
-        devicePicker.constraints(),
-        (notice) => retries.push(notice),
-      );
-      // What the device actually gave us, before we hand it back. Worth
-      // recording even on success: comparing a working machine's settings
-      // against a failing one is often what identifies the difference.
-      const probeTrack = probeStream.getAudioTracks()[0];
-      const probeSettings = probeTrack ? probeTrack.getSettings() : null;
-      const probeLabel = probeTrack ? probeTrack.label : null;
+      // at the end, behind resume() and a network fetch for the worklet — the
+      // request should not sit behind a network fetch, but reach the browser
+      // as close to the click that authorised it as possible.
+      const probeStream = await navigator.mediaDevices.getUserMedia(devicePicker.constraints());
       // Released immediately — the browser remembers the grant per-origin, so
       // later acquires (on 'r') never re-prompt and cost near-zero latency.
       probeStream.getTracks().forEach((track) => track.stop());
@@ -544,14 +466,6 @@ if (el.armButton) {
         onMaterialPeak: (peak) => gainControl.setMaterialPeak(peak),
       });
 
-      void reportDiagnostics({
-        stage: 'arm succeeded',
-        audioCtx,
-        runLadder: false,
-        note: { probeSettings, probeLabel, retries },
-        selectedDeviceId: devicePicker.deviceId,
-      });
-
       armed = true;
       reducerState = initialState();
 
@@ -566,43 +480,9 @@ if (el.armButton) {
     } catch (err) {
       showArmError(err);
       armButton.disabled = false;
-      // Walk the constraint ladder while the failure is fresh, so the report
-      // says WHICH request the device refused rather than only that one did.
-      void reportDiagnostics({
-        stage: 'arm failed',
-        audioCtx,
-        error: err,
-        runLadder: true,
-        note: { retries },
-        selectedDeviceId: devicePicker.deviceId,
-      });
     }
   });
 }
-
-// `window.quickReplayDiagnostics()` from the devtools console, any time —
-// useful for capturing a report when the app armed fine but the mic misbehaves
-// later, e.g. after switching input device mid-session.
-installDiagnosticsHook(() => ({
-  audioCtx,
-  selectedDeviceId: devicePicker.deviceId,
-  appState: {
-    armed,
-    mode: reducerState.mode,
-    previousMode: reducerState.previousMode,
-    playbackSource: reducerState.playbackSource,
-    micHeld: capture ? capture.micHeld : false,
-    // The buffer being empty is the difference between "the key did nothing"
-    // and "there was nothing to play" — dispatchDuration bails on available === 0.
-    bufferAvailableFrames: ringBuffer ? ringBuffer.available : null,
-    bufferAvailableSeconds: ringBuffer && audioCtx ? ringBuffer.available / audioCtx.sampleRate : null,
-    bufferTotalWritten: ringBuffer ? ringBuffer.totalWritten : null,
-    takeCount: takeTracker ? takeTracker.takes.length : null,
-    hasPlayback: playback !== null,
-    recentKeys,
-    lastPlaybackSeconds: playback ? playback.lastSeconds : null,
-  },
-}));
 
 // Periodic light re-render so the buffer-fill readout / duration
 // annotations keep advancing even between worklet messages or effects.

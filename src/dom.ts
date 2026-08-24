@@ -4,7 +4,7 @@
 // small status widgets (flash messages, arm/runtime errors, the focus
 // banner) that write directly to those elements.
 
-import { describeError } from './diagnostics.ts';
+import { describeError } from './errors.ts';
 
 // --- DOM refs ------------------------------------------------------------
 
@@ -104,9 +104,7 @@ export function showArmError(err: unknown): void {
     // while the name — AbortError, NotReadableError, OverconstrainedError —
     // is what actually says which kind of failure this was.
     const { name, message } = describeError(err);
-    el.armError.textContent =
-      `Failed to start: ${name} — ${message}. ` +
-      `A diagnostic report has been printed in the terminal running the server.`;
+    el.armError.textContent = `Failed to start: ${name} — ${message}`;
     el.armError.classList.add('visible');
   }
 }

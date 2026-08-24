@@ -78,13 +78,10 @@ length without leaving playback.
 ## Input device
 
 A dropdown lists the available microphone inputs and defaults to **System
-default**. Picking a specific device pins capture to it, which is the fix if
-you have an external mic set as your system default and arming fails with
-`AbortError: The operation was aborted` — pick it explicitly instead of
-relying on the OS default. The choice persists across reloads, and the list
-updates live as devices are plugged or unplugged; if the device you had
-selected disappears, quick-replay falls back to the system default and lets
-you know.
+default**. Picking a specific device pins capture to it. The choice persists
+across reloads, and the list updates live as devices are plugged or
+unplugged; if the device you had selected disappears, quick-replay falls back
+to the system default and lets you know.
 
 Device *names* only appear once mic permission has been granted at least
 once — before that the browser hides them for privacy, so the list shows
@@ -198,6 +195,11 @@ its wall-clock start time in a tooltip if you need the real answer.
   sessions.
 - Capture is raw — echo cancellation, auto gain control, and noise
   suppression are all disabled for fidelity.
+- Keyboard-focused browser extensions (Vimium and similar) can intercept
+  keystrokes before the page ever receives them — Vimium in particular
+  buffers digits as a count prefix for its own commands, which silently
+  swallows the `1`-`6` replay keys. If keys stop reaching the app, disabling
+  such an extension for this origin is the first thing to check.
 
 ## Source layout
 
