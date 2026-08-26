@@ -40,12 +40,21 @@ export interface Timeline {
 export interface TimelineDeps {
   /** Fired when a take's span on the timeline is clicked. */
   onTakeClick: (take: { id: number; startAbs: number; endAbs: number }) => void;
+  /** Fired when a click-and-drag across the track completes with a usable range. */
+  onClipDrag: (range: { startAbs: number; endAbs: number }) => void;
   /**
    * Peak amplitudes (0..1) over [startAbs, endAbs), resampled to `columns`
    * values — see peaks.ts. Null before the buffer exists (not yet armed).
    */
   getPeakColumns: (startAbs: number, endAbs: number, columns: number) => Float32Array | null;
 }
+
+// Below this movement, a press-release is a click, not a drag.
+const DRAG_THRESHOLD_PX = 4;
+
+// A dragged range shorter than this is treated as a mis-drag: cancelled, no
+// playback started.
+const MIN_CLIP_SECONDS = 0.25;
 
 const AXIS_INTERVALS_SECONDS = [5, 10, 15, 30, 60, 120, 300];
 
@@ -57,6 +66,11 @@ function pickAxisInterval(maxSeconds: number): number {
 }
 
 export function createTimeline(deps: TimelineDeps): Timeline {
+  // The most recent model handed to render(). Pointer handlers need it to
+  // convert pixel positions to absolute frames, but only render() sees a
+  // fresh model — cache it here rather than threading it through events.
+  let lastModel: TimelineModel | null = null;
+
   // --- timeline highlight (hover preview) -----------------------------------
 
   function showTimelineHighlight(pct: number): void {
@@ -115,18 +129,105 @@ export function createTimeline(deps: TimelineDeps): Timeline {
     el.timelineTicks.addEventListener('mouseleave', hideTimelineHighlight);
   }
 
-  // Click is delegated to the container rather than bound per span: the
-  // track's children are rebuilt several times a second while recording, and
-  // a listener bound to a span would die under its own feet as soon as that
-  // span is replaced.
+  // --- drag preview -----------------------------------------------------
+
+  function showDragPreview(startAbs: number, endAbs: number, model: TimelineModel): void {
+    if (!el.timelineDragPreview) return;
+    const fraction = (abs: number) =>
+      Math.min(1, Math.max(0, (abs - model.windowStartAbs) / model.capacity));
+    const startPct = fraction(startAbs) * 100;
+    const endPct = fraction(endAbs) * 100;
+    el.timelineDragPreview.style.left = `${startPct}%`;
+    el.timelineDragPreview.style.width = `${Math.max(0, endPct - startPct)}%`;
+    el.timelineDragPreview.classList.remove('hidden');
+  }
+
+  function hideDragPreview(): void {
+    if (!el.timelineDragPreview) return;
+    el.timelineDragPreview.classList.add('hidden');
+  }
+
+  // Exact inverse of the fraction() helper used for drawing.
+  function clientXToAbs(clientX: number, model: TimelineModel, rect: DOMRect): number {
+    const fraction = rect.width > 0 ? (clientX - rect.left) / rect.width : 0;
+    const clamped = Math.min(1, Math.max(0, fraction));
+    return model.windowStartAbs + clamped * model.capacity;
+  }
+
+  // Take-click detection is done via elementFromPoint rather than
+  // event.target: once setPointerCapture is engaged, pointer events retarget
+  // to the capturing element (the track itself) regardless of where the
+  // pointer physically is, so event.target would no longer report which take
+  // span (if any) sits under the release point.
+  function takeAtPoint(clientX: number, clientY: number): { id: number; startAbs: number; endAbs: number } | null {
+    const target = document.elementFromPoint(clientX, clientY);
+    if (!(target instanceof HTMLElement)) return null;
+    const { takeId, startAbs, endAbs } = target.dataset;
+    if (takeId === undefined || startAbs === undefined || endAbs === undefined) return null;
+    return { id: Number(takeId), startAbs: Number(startAbs), endAbs: Number(endAbs) };
+  }
+
+  // Press-and-drag across the track sets an arbitrary clip; a press-and-
+  // release without moving past the threshold falls back to the pre-existing
+  // take-click behaviour. Both paths live here (rather than a separate click
+  // listener) so a completed drag can never also fire a click.
+  interface DragState {
+    pointerId: number;
+    startClientX: number;
+    dragging: boolean;
+  }
+  let dragState: DragState | null = null;
+
   if (el.timelineTrack) {
-    el.timelineTrack.addEventListener('click', (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof HTMLElement)) return;
-      const { takeId, startAbs, endAbs } = target.dataset;
-      if (takeId === undefined || startAbs === undefined || endAbs === undefined) return;
-      deps.onTakeClick({ id: Number(takeId), startAbs: Number(startAbs), endAbs: Number(endAbs) });
+    const trackEl = el.timelineTrack;
+
+    trackEl.addEventListener('pointerdown', (event: PointerEvent) => {
+      if (!lastModel || lastModel.capacity <= 0) return;
+      trackEl.setPointerCapture(event.pointerId);
+      dragState = { pointerId: event.pointerId, startClientX: event.clientX, dragging: false };
     });
+
+    trackEl.addEventListener('pointermove', (event: PointerEvent) => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      if (!lastModel || lastModel.capacity <= 0) return;
+      if (!dragState.dragging) {
+        if (Math.abs(event.clientX - dragState.startClientX) < DRAG_THRESHOLD_PX) return;
+        dragState.dragging = true;
+      }
+      const rect = trackEl.getBoundingClientRect();
+      const a = clientXToAbs(dragState.startClientX, lastModel, rect);
+      const b = clientXToAbs(event.clientX, lastModel, rect);
+      showDragPreview(Math.min(a, b), Math.max(a, b), lastModel);
+    });
+
+    const endDrag = (event: PointerEvent, commit: boolean): void => {
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+      const state = dragState;
+      dragState = null;
+      if (trackEl.hasPointerCapture(event.pointerId)) trackEl.releasePointerCapture(event.pointerId);
+      hideDragPreview();
+
+      if (!commit) return;
+
+      if (!state.dragging) {
+        const take = takeAtPoint(event.clientX, event.clientY);
+        if (take) deps.onTakeClick(take);
+        return;
+      }
+
+      if (!lastModel || lastModel.capacity <= 0) return;
+      const rect = trackEl.getBoundingClientRect();
+      const a = clientXToAbs(state.startClientX, lastModel, rect);
+      const b = clientXToAbs(event.clientX, lastModel, rect);
+      const startAbs = Math.max(lastModel.oldestAbs, Math.min(a, b));
+      const endAbs = Math.min(lastModel.nowAbs, Math.max(a, b));
+      const minFrames = MIN_CLIP_SECONDS * lastModel.sampleRate;
+      if (endAbs - startAbs < minFrames) return;
+      deps.onClipDrag({ startAbs, endAbs });
+    };
+
+    trackEl.addEventListener('pointerup', (event: PointerEvent) => endDrag(event, true));
+    trackEl.addEventListener('pointercancel', (event: PointerEvent) => endDrag(event, false));
   }
 
   // --- waveform (rough peak envelope, drawn behind the take spans) ---------
@@ -194,6 +295,7 @@ export function createTimeline(deps: TimelineDeps): Timeline {
   }
 
   function renderTimeline(model: TimelineModel | null): void {
+    lastModel = model;
     drawWaveform(model);
 
     if (!el.timelineTicks || !el.timelineTrack || !el.timelineAxis) return;

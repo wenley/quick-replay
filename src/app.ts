@@ -180,11 +180,25 @@ function modeLabelText(mode: Mode): string {
 
 // --- timeline ------------------------------------------------------------
 
+// Every drag gets its own source tag rather than a shared 'drag' literal:
+// the reducer treats a duration re-trigger as an EXIT when the incoming
+// source equals the currently-playing one, and a REPLACE otherwise. Each
+// drag names a new range, so it must always replace, even if a second drag
+// is released while the first dragged clip is still looping — a shared
+// literal would make that second drag equal the first and incorrectly exit
+// instead.
+let dragSourceSeq = 0;
+
 const timeline = createTimeline({
   onTakeClick: (take) => {
     if (!audioCtx) return;
     const seconds = (take.endAbs - take.startAbs) / audioCtx.sampleRate;
     dispatchDuration(seconds, `take ${take.id}`, `take:${take.id}`, take.startAbs);
+  },
+  onClipDrag: (range) => {
+    if (!audioCtx) return;
+    const seconds = (range.endAbs - range.startAbs) / audioCtx.sampleRate;
+    dispatchDuration(seconds, `clip (${formatMinSec(seconds)})`, `drag:${dragSourceSeq++}`, range.startAbs);
   },
   getPeakColumns: (startAbs, endAbs, columns) =>
     peakBuffer ? peakBuffer.readColumns(startAbs, endAbs, columns) : null,

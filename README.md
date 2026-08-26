@@ -155,6 +155,17 @@ Clicking it again leaves playback, exactly like re-pressing the duration key
 that launched a replay. A take partly overwritten by the rolling buffer plays
 from as far back as is still held, rather than from its original start.
 
+Click-and-drag horizontally across the track to set an arbitrary **clip** and
+play it — useful when you want a span the fixed durations and take boundaries
+don't line up with. A live dashed preview band tracks the range as you drag;
+releasing plays it, looping like any other replay. Drag in either direction —
+the earlier point always becomes the clip's start — and the range is clamped
+to whatever the buffer still holds. Dragging while a clip is already playing
+replaces it with the newly dragged range rather than exiting playback. A drag
+shorter than 0.25s is treated as a mis-drag and does nothing; a press that
+never moves past a few pixels is treated as a click instead of a drag, so
+clicking a take still works exactly as before.
+
 Take markers are stored as absolute positions in the audio stream rather than as
 offsets into the ring buffer. Once the buffer fills and old audio starts being
 overwritten, the markers don't move — the retained window slides forward past

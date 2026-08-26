@@ -42,6 +42,7 @@ export interface Elements {
   timelineAxis: HTMLElement | null;
   timelineHighlight: HTMLElement | null;
   timelinePlaying: HTMLElement | null;
+  timelineDragPreview: HTMLElement | null;
   levelMeterContainer: HTMLElement | null;
   levelMeterFill: HTMLElement | null;
   playbackStatus: HTMLElement | null;
@@ -72,6 +73,7 @@ export const el: Elements = {
   timelineAxis: byId('timeline-axis'),
   timelineHighlight: byId('timeline-highlight'),
   timelinePlaying: byId('timeline-playing'),
+  timelineDragPreview: byId('timeline-drag-preview'),
   levelMeterContainer: byId('level-meter-container'),
   levelMeterFill: byId('level-meter-fill'),
   playbackStatus: byId('playback-status'),
