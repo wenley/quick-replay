@@ -36,6 +36,8 @@ let peakBuffer: PeakBuffer | null = null;
 // Bucket size for the peak envelope: ~21ms at 48kHz. Fine enough to show
 // syllable-scale amplitude structure, coarse enough that the ring stays tiny.
 const PEAK_BUCKET_FRAMES = 1024;
+// How far Left/Right move the playhead within the current clip.
+const SEEK_SECONDS = 5;
 let capture: Capture | null = null;
 let armed = false;
 
@@ -315,13 +317,21 @@ window.addEventListener('keydown', (event: KeyboardEvent) => {
 
   // When a slider itself has focus, let its native arrow handling run and
   // let the `input` event carry the change — otherwise we'd apply ±1 dB
-  // twice for gain, or double-adjust the speed slider's own value.
+  // twice for gain, double-adjust the speed slider's own value, or (for
+  // Left/Right) drag the focused slider instead of seeking.
   const sliderFocused = document.activeElement === el.gainSlider
     || document.activeElement === el.speedSlider;
 
   if (!sliderFocused && (key === 'ArrowUp' || key === 'ArrowDown')) {
     event.preventDefault();
     gainControl.nudge(key === 'ArrowUp' ? 1 : -1);
+    return;
+  }
+
+  if (!sliderFocused && reducerState.mode === PLAYBACK
+    && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+    event.preventDefault();
+    playback?.seek(key === 'ArrowLeft' ? -SEEK_SECONDS : SEEK_SECONDS);
     return;
   }
 
@@ -493,6 +503,9 @@ if (el.armButton) {
         getSpeed: () => speedControl.value,
         onEnded: () => { dispatch({ type: 'playbackEnded' }); },
         onMaterialPeak: (peak) => gainControl.setMaterialPeak(peak),
+        onSeek: (position, total) => {
+          flashMessage(`${formatMinSec(position)} / ${formatMinSec(total)}`);
+        },
       });
 
       armed = true;

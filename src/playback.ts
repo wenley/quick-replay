@@ -20,6 +20,8 @@ export interface PlaybackDeps {
   onEnded: () => void;
   /** Peak of the material about to play, for the clipping warning. */
   onMaterialPeak: (peak: number) => void;
+  /** A seek just moved the playhead, for a UI flash of the new position. */
+  onSeek?: (position: number, total: number) => void;
 }
 
 export interface Playback {
@@ -27,6 +29,11 @@ export interface Playback {
   stop(): void;
   /** Retune a running stretched playback without restarting it. */
   retuneSpeed(): void;
+  /**
+   * Move the playhead by `deltaSeconds` within the clip currently playing.
+   * Clamped to the clip; does nothing when nothing is playing.
+   */
+  seek(deltaSeconds: number): void;
   /** True when the running playback is on the media-element (stretched) path. */
   readonly isStretching: boolean;
   /** The stretch of buffer the current replay is drawn from. */
@@ -49,6 +56,10 @@ interface LegacyPreservesPitch {
 
 export function createPlayback(deps: PlaybackDeps): Playback {
   let currentPlaybackSource: AudioBufferSourceNode | HTMLAudioElement | null = null;
+  // The buffer behind the currently-playing 1.0x pass, kept around so seek()
+  // can restart the same audio at a new offset. Null on the media-element
+  // path and whenever nothing is playing.
+  let currentBuffer: AudioBuffer | null = null;
   let playbackGeneration = 0; // bumped whenever a playback source is superseded
   let playbackStartTime = 0;
   let playbackDurationSeconds = 0;
@@ -173,6 +184,7 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
     buffer.copyToChannel(samples as Float32Array<ArrayBuffer>, 0);
 
+    currentBuffer = buffer;
     playBuffer(buffer, myPlaybackGen);
   }
 
@@ -187,7 +199,11 @@ export function createPlayback(deps: PlaybackDeps): Playback {
   // `source.loop = true`): that keeps every pass going through the same
   // onended -> generation-guard -> restart accounting, and lets the progress
   // bar reset per pass instead of pinning at 100%.
-  function playBuffer(buffer: AudioBuffer, myPlaybackGen: number): void {
+  //
+  // `offsetSeconds` only applies to this one pass — a seek moves within the
+  // current pass, but the looping restart below always calls back in with no
+  // offset, so a pass that ends still replays the clip from its start.
+  function playBuffer(buffer: AudioBuffer, myPlaybackGen: number, offsetSeconds = 0): void {
     const ctx = deps.audioCtx;
 
     const source = ctx.createBufferSource();
@@ -212,10 +228,13 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     };
 
     currentPlaybackSource = source;
-    playbackStartTime = ctx.currentTime;
+    // So the progress bar reads the true position immediately instead of
+    // jumping back to 0 when this pass starts mid-clip (a seek restart).
+    playbackStartTime = ctx.currentTime - offsetSeconds;
+    // The bar measures the whole clip, not the remaining part after a seek.
     playbackDurationSeconds = buffer.duration;
 
-    source.start();
+    source.start(0, offsetSeconds);
     // Idempotent restart: a prior pass's loop may already have wound down to
     // progressRaf === null (ratio hit 1), or may still have a frame pending —
     // either way this guarantees exactly one loop is driving the bar.
@@ -310,6 +329,7 @@ export function createPlayback(deps: PlaybackDeps): Playback {
       }
     }
     currentPlaybackSource = null;
+    currentBuffer = null;
     stopProgressLoop();
     renderPlaybackProgress(0);
   }
@@ -329,10 +349,57 @@ export function createPlayback(deps: PlaybackDeps): Playback {
     playbackStartTime = ctx.currentTime - progress * playbackDurationSeconds;
   }
 
+  // Move the playhead by `deltaSeconds` within whichever clip is currently
+  // playing. Both engines are handled: the media element can just have its
+  // `currentTime` reassigned, but an AudioBufferSourceNode can't be
+  // repositioned once started, so that path supersedes and restarts at the
+  // new offset.
+  function seek(deltaSeconds: number): void {
+    if (currentPlaybackSource === null) return;
+    const ctx = deps.audioCtx;
+
+    let total: number;
+    let offset: number;
+    if (currentPlaybackSource instanceof HTMLAudioElement) {
+      total = mediaClipSeconds;
+      offset = currentPlaybackSource.currentTime;
+    } else {
+      total = currentBuffer ? currentBuffer.duration : 0;
+      offset = Math.min(total, Math.max(0, ctx.currentTime - playbackStartTime));
+    }
+
+    // The small margin stops a seek to the exact end from firing `onended`
+    // instantly and looping.
+    const next = Math.min(Math.max(offset + deltaSeconds, 0), Math.max(0, total - 0.05));
+    if (Math.abs(next - offset) < 0.001) return; // already clamped against the edge
+
+    if (currentPlaybackSource instanceof HTMLAudioElement) {
+      // Assigning currentTime is enough — no restart needed on this path.
+      currentPlaybackSource.currentTime = next;
+      // Re-base the bar exactly as retuneMediaSpeed already does.
+      playbackDurationSeconds = mediaClipSeconds / deps.getSpeed();
+      playbackStartTime = ctx.currentTime - (next / mediaClipSeconds) * playbackDurationSeconds;
+    } else if (currentBuffer) {
+      // An AudioBufferSourceNode can't be repositioned — supersede and
+      // restart at the new offset. The old source's onended will still fire
+      // and must find itself stale; that's exactly what the generation
+      // guard is for.
+      playbackGeneration++;
+      const newGen = playbackGeneration;
+      const oldSource = currentPlaybackSource;
+      try { oldSource.stop(); } catch { /* already stopped */ }
+      try { oldSource.disconnect(); } catch { /* ignore */ }
+      playBuffer(currentBuffer, newGen, next);
+    }
+
+    deps.onSeek?.(next, total);
+  }
+
   return {
     start: startPlayback,
     stop: stopPlayback,
     retuneSpeed: retuneMediaSpeed,
+    seek,
     get isStretching(): boolean {
       return currentPlaybackSource !== null && currentPlaybackSource === mediaAudioEl;
     },

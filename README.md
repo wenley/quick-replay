@@ -66,6 +66,7 @@ on your network.
 | `Esc` | Back to Standby |
 | `↑` / `↓` | Playback volume ±1 dB |
 | `0` | Reset volume to 0 dB |
+| `←` / `→` | Seek ±5s within the current clip |
 
 The browser tab must be focused for keys to register.
 
@@ -196,7 +197,8 @@ its wall-clock start time in a tooltip if you need the real answer.
 - **Playback** — replaying a fixed lookback window on loop, until you leave
   it with `Space` (back to whichever mode it was launched from), `Esc` (to
   Standby), or by pressing the lit duration key again (same as `Space`). The
-  playback status line reads "looping last …" while it runs.
+  playback status line reads "looping last …" while it runs. `←` / `→` seek
+  ±5s within that clip — they move the playhead, not which clip is playing.
 
 ## Things worth knowing
 
