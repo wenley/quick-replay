@@ -40,6 +40,11 @@ export interface Timeline {
 export interface TimelineDeps {
   /** Fired when a take's span on the timeline is clicked. */
   onTakeClick: (take: { id: number; startAbs: number; endAbs: number }) => void;
+  /**
+   * Peak amplitudes (0..1) over [startAbs, endAbs), resampled to `columns`
+   * values — see peaks.ts. Null before the buffer exists (not yet armed).
+   */
+  getPeakColumns: (startAbs: number, endAbs: number, columns: number) => Float32Array | null;
 }
 
 const AXIS_INTERVALS_SECONDS = [5, 10, 15, 30, 60, 120, 300];
@@ -124,7 +129,73 @@ export function createTimeline(deps: TimelineDeps): Timeline {
     });
   }
 
+  // --- waveform (rough peak envelope, drawn behind the take spans) ---------
+
+  // Matches --text-dim (#8b909a) as a fallback if the custom property can't
+  // be read for some reason; the real value is read from the document each
+  // draw so a stylesheet change is picked up without touching this file.
+  const WAVEFORM_COLOR_FALLBACK = '#8b909a';
+
+  function drawWaveform(model: TimelineModel | null): void {
+    const canvas = el.timelineWaveform;
+    if (!canvas) return;
+    const ctx2d = canvas.getContext('2d');
+    if (!ctx2d) return;
+
+    // Re-measured every render: the track can be resized by the window, and
+    // this is cheap enough to just always recheck rather than wire up a
+    // ResizeObserver.
+    const dpr = window.devicePixelRatio || 1;
+    const cssWidth = canvas.clientWidth;
+    const cssHeight = canvas.clientHeight;
+    const backingWidth = Math.max(1, Math.round(cssWidth * dpr));
+    const backingHeight = Math.max(1, Math.round(cssHeight * dpr));
+    if (canvas.width !== backingWidth) canvas.width = backingWidth;
+    if (canvas.height !== backingHeight) canvas.height = backingHeight;
+
+    // Scale so drawing coordinates are CSS pixels, but a 1-unit-wide rect
+    // still lands on exactly one physical pixel column below.
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx2d.clearRect(0, 0, cssWidth, cssHeight);
+
+    if (!model || model.capacity <= 0) return;
+
+    // One bar per device pixel column, not per CSS pixel, so the envelope is
+    // as sharp as the display allows.
+    const columns = backingWidth;
+    const peakColumns = deps.getPeakColumns(model.windowStartAbs, model.nowAbs, columns);
+    if (!peakColumns) return;
+
+    const color = getComputedStyle(document.documentElement)
+      .getPropertyValue('--text-dim')
+      .trim() || WAVEFORM_COLOR_FALLBACK;
+    ctx2d.fillStyle = color;
+
+    const barWidth = 1 / dpr;
+    for (let i = 0; i < columns; i++) {
+      const peak = Math.min(1, Math.max(0, peakColumns[i] ?? 0));
+      if (peak <= 0) continue;
+      const barHeight = peak * cssHeight;
+      ctx2d.fillRect(i * barWidth, (cssHeight - barHeight) / 2, barWidth, barHeight);
+    }
+  }
+
+  // The take spans/markers churn several times a second while recording, but
+  // the waveform canvas underneath them must not be torn down and rebuilt on
+  // every pass — detaching/reattaching a canvas is at best wasteful and at
+  // worst risks its backing bitmap on less forgiving browsers. So the track's
+  // children are updated in place, leaving the canvas (always its first
+  // child) untouched.
+  function replaceTakeLayerChildren(trackEl: HTMLElement, frag: DocumentFragment): void {
+    for (const child of Array.from(trackEl.children)) {
+      if (child !== el.timelineWaveform) child.remove();
+    }
+    trackEl.append(frag);
+  }
+
   function renderTimeline(model: TimelineModel | null): void {
+    drawWaveform(model);
+
     if (!el.timelineTicks || !el.timelineTrack || !el.timelineAxis) return;
     const ticksEl = el.timelineTicks;
     const trackEl = el.timelineTrack;
@@ -132,7 +203,7 @@ export function createTimeline(deps: TimelineDeps): Timeline {
 
     if (!model || model.capacity <= 0) {
       ticksEl.replaceChildren();
-      trackEl.replaceChildren();
+      replaceTakeLayerChildren(trackEl, document.createDocumentFragment());
       axisEl.replaceChildren();
       hideTimelineHighlight();
       return;
@@ -207,7 +278,7 @@ export function createTimeline(deps: TimelineDeps): Timeline {
         trackFrag.appendChild(endMarker);
       }
     }
-    trackEl.replaceChildren(trackFrag);
+    replaceTakeLayerChildren(trackEl, trackFrag);
 
     // --- time axis: adaptive interval, "now" right-aligned ---
     const axisFrag = document.createDocumentFragment();

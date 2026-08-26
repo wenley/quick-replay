@@ -24,6 +24,10 @@ function selectById(id: string): HTMLSelectElement | null {
   return document.getElementById(id) as HTMLSelectElement | null;
 }
 
+function canvasById(id: string): HTMLCanvasElement | null {
+  return document.getElementById(id) as HTMLCanvasElement | null;
+}
+
 export interface Elements {
   armScreen: HTMLElement | null;
   armButton: HTMLButtonElement | null;
@@ -34,6 +38,7 @@ export interface Elements {
   bufferText: HTMLElement | null;
   timelineTicks: HTMLElement | null;
   timelineTrack: HTMLElement | null;
+  timelineWaveform: HTMLCanvasElement | null;
   timelineAxis: HTMLElement | null;
   timelineHighlight: HTMLElement | null;
   timelinePlaying: HTMLElement | null;
@@ -63,6 +68,7 @@ export const el: Elements = {
   bufferText: byId('buffer-text'),
   timelineTicks: byId('timeline-ticks'),
   timelineTrack: byId('timeline-track'),
+  timelineWaveform: canvasById('timeline-waveform'),
   timelineAxis: byId('timeline-axis'),
   timelineHighlight: byId('timeline-highlight'),
   timelinePlaying: byId('timeline-playing'),

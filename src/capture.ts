@@ -31,7 +31,7 @@ export interface CaptureDeps {
   /** Every entry into Record begins a new take. */
   onTakeBegin: () => void;
   /** Called after each batch is written to the ring buffer. */
-  onFramesCaptured: (startAbs: number, endAbs: number) => void;
+  onFramesCaptured: (startAbs: number, endAbs: number, samples: Float32Array) => void;
   onError: (message: string) => void;
 }
 
@@ -110,7 +110,7 @@ export function createCapture(deps: CaptureDeps): Capture {
       if (!data || data.type !== 'audio') return;
       const startAbs = buffer.totalWritten;
       buffer.write(data.samples);
-      deps.onFramesCaptured(startAbs, buffer.totalWritten);
+      deps.onFramesCaptured(startAbs, buffer.totalWritten, data.samples);
       updateLevelMeterFromWorklet(data.peak);
     };
     gainNode = ctx.createGain();

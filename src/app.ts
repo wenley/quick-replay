@@ -17,6 +17,7 @@ import {
 import { DURATIONS, MAX_SECONDS } from './config.ts';
 import { formatMinSec, formatSpeed } from './format.ts';
 import { createTakeTracker, type TakeTracker } from './takes.ts';
+import { createPeakBuffer, type PeakBuffer } from './peaks.ts';
 import { el, flashMessage, showArmError, setFocusBannerVisible, showRuntimeError } from './dom.ts';
 import { createTimeline, type TimelineModel } from './timeline.ts';
 import { createGainControl } from './gain.ts';
@@ -30,6 +31,11 @@ import { createPlayback, type Playback } from './playback.ts';
 let audioCtx: AudioContext | null = null;
 let ringBuffer: RingBuffer | null = null;
 let takeTracker: TakeTracker | null = null;
+let peakBuffer: PeakBuffer | null = null;
+
+// Bucket size for the peak envelope: ~21ms at 48kHz. Fine enough to show
+// syllable-scale amplitude structure, coarse enough that the ring stays tiny.
+const PEAK_BUCKET_FRAMES = 1024;
 let capture: Capture | null = null;
 let armed = false;
 
@@ -180,6 +186,8 @@ const timeline = createTimeline({
     const seconds = (take.endAbs - take.startAbs) / audioCtx.sampleRate;
     dispatchDuration(seconds, `take ${take.id}`, `take:${take.id}`, take.startAbs);
   },
+  getPeakColumns: (startAbs, endAbs, columns) =>
+    peakBuffer ? peakBuffer.readColumns(startAbs, endAbs, columns) : null,
 });
 
 function render(): void {
@@ -443,6 +451,10 @@ if (el.armButton) {
       const capacityFrames = Math.floor(MAX_SECONDS * audioCtx.sampleRate);
       ringBuffer = createRingBuffer(capacityFrames);
       takeTracker = createTakeTracker(ringBuffer);
+      // +1 so the bucket the write head is currently filling always has
+      // somewhere to live alongside a full buffer's worth of completed ones.
+      const capacityBuckets = Math.ceil(capacityFrames / PEAK_BUCKET_FRAMES) + 1;
+      peakBuffer = createPeakBuffer(PEAK_BUCKET_FRAMES, capacityBuckets);
 
       capture = createCapture({
         audioCtx,
@@ -451,7 +463,10 @@ if (el.armButton) {
         getConstraints: () => devicePicker.constraints(),
         isRecording: () => reducerState.mode === RECORD,
         onTakeBegin: () => takeTracker?.beginNewTake(),
-        onFramesCaptured: (startAbs, endAbs) => takeTracker?.noteCapturedFrames(startAbs, endAbs),
+        onFramesCaptured: (startAbs, endAbs, samples) => {
+          takeTracker?.noteCapturedFrames(startAbs, endAbs);
+          peakBuffer?.write(startAbs, samples);
+        },
         onError: showRuntimeError,
       });
 

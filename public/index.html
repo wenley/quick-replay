@@ -235,18 +235,34 @@
 
   #timeline-track {
     position: relative;
-    height: 22px;
+    height: 64px;
     border-radius: 6px;
     background: var(--panel);
     border: 1px solid var(--panel-border);
     overflow: hidden;
   }
 
+  /* Rough amplitude envelope, drawn behind the take spans. Sits first in DOM
+     order and never intercepts clicks meant for the take spans above it. */
+  #timeline-waveform {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    pointer-events: none;
+  }
+
+  /* Translucent tint rather than a solid fill, so the waveform underneath
+     still reads through. Standby/record keep their existing colours, just
+     at low alpha; .active stays the more opaque, clearly-distinct one. */
   .timeline-take {
     position: absolute;
     top: 0;
     bottom: 0;
     background: var(--standby);
+    opacity: 0.32;
     cursor: pointer;
   }
 
@@ -256,6 +272,7 @@
 
   .timeline-take.active {
     background: var(--record);
+    opacity: 0.55;
   }
 
   .timeline-take.active:hover {
@@ -715,7 +732,9 @@
       <div id="timeline">
         <div id="timeline-ticks"></div>
         <div id="timeline-track-wrap">
-          <div id="timeline-track"></div>
+          <div id="timeline-track">
+            <canvas id="timeline-waveform"></canvas>
+          </div>
           <div id="timeline-playing" class="hidden"></div>
           <div id="timeline-highlight" class="hidden"></div>
         </div>

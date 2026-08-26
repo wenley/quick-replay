@@ -162,6 +162,12 @@ them, takes scroll off the left edge, and a take whose start has been
 overwritten stops showing a start marker, because that boundary is genuinely
 gone rather than sitting at the buffer edge.
 
+The bar also shows a rough amplitude envelope behind the take spans, so you
+can see at a glance where sound actually is in the buffer — useful for judging
+how far back a quiet stretch is worth reaching into. It's a summary, not the
+real waveform: amplitude is captured in ~21ms buckets (peak-only, no shape
+within a bucket), so very short transients can be smoothed over.
+
 While a replay is running, the stretch of buffer it is drawn from is lit up on
 the timeline and the duration key that launched it is highlighted, so the key,
 the clip length, and the region being heard all read as one thing. Position
