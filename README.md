@@ -10,9 +10,9 @@ time-to-replay is close to zero.
 
 - Node 24+. Node runs the `.ts` sources directly — the server and the tests
   are never compiled — and 24 is what this is developed and tested against.
-- **Chrome.** It has the most reliable `AudioWorklet` support and remembers
-  mic permission per-origin, so you're only prompted once. Safari's behavior
-  here is flakier — stick with Chrome.
+- **Chrome or Firefox.** Both are known to work, including `AudioWorklet`
+  capture and the pitch-preserving slowdown, and both remember mic permission
+  per-origin so you are only prompted once. Safari is untested.
 
 ## Run it
 
@@ -123,9 +123,9 @@ clip through Web Audio the normal way — instant, zero added latency. Below
 `preservesPitch` enabled and routes its output back through the same Web
 Audio gain node. That's the browser's own native pitch-preserving
 time-stretcher — there's no hand-rolled phase vocoder or WSOLA here, just
-what Chrome already ships for exactly this purpose. The tradeoff is a small
-one-time delay to encode the clip before that first slowed play begins,
-which the 1.0x path never pays.
+what the browser already ships for exactly this purpose. The tradeoff is a
+small one-time delay to encode the clip before that first slowed play
+begins, which the 1.0x path never pays.
 
 Sustained vowels hold up well even at 0.5x — that's the material this is
 built for. Consonants and other transients smear somewhat at the slower
